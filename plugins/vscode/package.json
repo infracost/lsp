@@ -1,0 +1,77 @@
+{
+  "name": "vscode-infracost",
+  "displayName": "Infracost",
+  "description": "Cloud cost estimates for Terraform",
+  "version": "0.1.0",
+  "publisher": "infracost",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:terraform",
+    "onLanguage:yaml",
+    "onLanguage:json"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "infracost",
+          "title": "Infracost",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "infracost": [
+        {
+          "type": "webview",
+          "id": "infracost.resourceDetails",
+          "name": "Resource Details"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Infracost",
+      "properties": {
+        "infracost.serverPath": {
+          "type": "string",
+          "default": "infracost-ls",
+          "description": "Path to the infracost-ls binary"
+        },
+        "infracost.runParamsCacheTTLSeconds": {
+          "type": "number",
+          "default": 300,
+          "description": "How long (in seconds) to cache run parameters (org ID, tag policies) between API calls. Set to 0 to disable caching."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "infracost.login",
+        "title": "Infracost: Login"
+      },
+      {
+        "command": "infracost.restartLsp",
+        "title": "Infracost: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.3.0"
+  }
+}

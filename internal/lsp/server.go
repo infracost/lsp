@@ -1,0 +1,485 @@
+package lsp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/owenrumney/go-lsp/lsp"
+	"github.com/owenrumney/go-lsp/server"
+
+	repoconfig "github.com/infracost/config"
+
+	"github.com/infracost/lsp/internal/scanner"
+	"github.com/infracost/lsp/version"
+)
+
+// Settings holds client-provided configuration synced via workspace/didChangeConfiguration.
+type Settings struct {
+	RunParamsCacheTTLSeconds int `json:"runParamsCacheTTLSeconds"`
+}
+
+const defaultRunParamsCacheTTLSeconds = 300
+
+type Server struct {
+	scanner *scanner.Scanner
+	client  *server.Client
+	srv     *server.Server
+
+	mu             sync.RWMutex
+	settings       Settings
+	config         *repoconfig.Config
+	projectResults map[string]*scanner.ScanResult // project name → result
+
+	// filesWithDiagnostics tracks URIs that currently have published diagnostics.
+	// Used to clear diagnostics when violations are resolved.
+	filesWithDiagnostics map[string]struct{}
+
+	// scanningProjects tracks which projects are currently being scanned.
+	scanningProjects map[string]struct{}
+
+	// scanCancels holds cancel functions for in-flight scans, keyed by project name.
+	scanCancels map[string]context.CancelFunc
+
+	// scanTimers holds debounce timers for pending scan requests, keyed by project name.
+	scanTimers map[string]*time.Timer
+
+	// workspaceRoot is the root directory from the client's initialize request.
+	workspaceRoot string
+
+	// clientSupportsCodeLens is true when the client advertises CodeLens support.
+	// When true, inlay hints are skipped to avoid duplication.
+	clientSupportsCodeLens bool
+
+	// loginInProgress is true while a device authorization flow is running.
+	loginInProgress bool
+	loginCancel     context.CancelFunc
+}
+
+func NewServer(s *scanner.Scanner) *Server {
+	return &Server{
+		scanner:              s,
+		projectResults:       make(map[string]*scanner.ScanResult),
+		filesWithDiagnostics: make(map[string]struct{}),
+		scanningProjects:     make(map[string]struct{}),
+		scanCancels:          make(map[string]context.CancelFunc),
+		scanTimers:           make(map[string]*time.Timer),
+	}
+}
+
+// SetClient implements server.ClientHandler. It is called by the go-lsp
+// server after the connection is established, providing access to
+// server→client communication.
+func (s *Server) SetClient(c *server.Client) {
+	s.client = c
+}
+
+func (s *Server) SetServer(srv *server.Server) {
+	s.srv = srv
+}
+
+// Initialize implements server.LifecycleHandler.
+func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*lsp.InitializeResult, error) {
+	if h := s.srv.DebugHandler(); h != nil {
+		slog.SetDefault(slog.New(h))
+	}
+
+	rootURI := ""
+	if params.RootURI != nil {
+		rootURI = string(*params.RootURI)
+	}
+	s.workspaceRoot = uriToPath(rootURI)
+	slog.Info("initialize",
+		"workspace_root", s.workspaceRoot,
+		"client", params.ClientInfo,
+	)
+
+	if params.Capabilities.TextDocument != nil && params.Capabilities.TextDocument.CodeLens != nil {
+		s.clientSupportsCodeLens = true
+	}
+
+	s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
+
+	if s.workspaceRoot != "" {
+		go s.loadConfigAndScan()
+	}
+
+	enabled := true
+
+	return &lsp.InitializeResult{
+		Capabilities: lsp.ServerCapabilities{
+			TextDocumentSync: &lsp.TextDocumentSyncOptions{
+				OpenClose: &enabled,
+				Change:    lsp.SyncIncremental,
+				Save:      &lsp.SaveOptions{IncludeText: &enabled},
+			},
+			CodeLensProvider: &lsp.CodeLensOptions{},
+			CodeActionProvider: &lsp.CodeActionOptions{
+				CodeActionKinds: []lsp.CodeActionKind{
+					lsp.CodeActionQuickFix,
+				},
+			},
+			HoverProvider: &enabled,
+			Workspace: &lsp.ServerWorkspaceCapabilities{
+				WorkspaceFolders: &lsp.WorkspaceFoldersServerCapabilities{
+					Supported:           &enabled,
+					ChangeNotifications: &enabled,
+				},
+			},
+			ExecuteCommandProvider: &lsp.ExecuteCommandOptions{},
+		},
+		ServerInfo: &lsp.ServerInfo{
+			Name:    "infracost-ls",
+			Version: version.Version,
+		},
+	}, nil
+}
+
+// ExecuteCommand is a no-op stub. Commands like infracost.revealResource are
+// handled client-side by the VS Code extension; this exists only to satisfy
+// the LSP ExecuteCommandProvider capability.
+func (s *Server) ExecuteCommand(_ context.Context, _ *lsp.ExecuteCommandParams) (any, error) {
+	return nil, nil
+}
+
+// Shutdown implements server.LifecycleHandler.
+func (s *Server) Shutdown(_ context.Context) error {
+	slog.Info("shutdown requested")
+
+	s.mu.Lock()
+	for name, t := range s.scanTimers {
+		t.Stop()
+		delete(s.scanTimers, name)
+	}
+	for name, cancel := range s.scanCancels {
+		cancel()
+		delete(s.scanCancels, name)
+	}
+	s.mu.Unlock()
+
+	s.scanner.Close()
+	return nil
+}
+
+// DidChangeWorkspaceFolders implements server.WorkspaceFoldersHandler.
+func (s *Server) DidChangeWorkspaceFolders(_ context.Context, params *lsp.DidChangeWorkspaceFoldersParams) error {
+	slog.Info("didChangeWorkspaceFolders",
+		"added", len(params.Event.Added),
+		"removed", len(params.Event.Removed),
+	)
+
+	if len(params.Event.Added) == 0 {
+		return nil
+	}
+
+	newRoot := uriToPath(string(params.Event.Added[0].URI))
+	slog.Info("workspace root changed", "old", s.workspaceRoot, "new", newRoot)
+
+	s.resetState()
+	s.workspaceRoot = newRoot
+	go s.loadConfigAndScan()
+
+	return nil
+}
+
+// DidChangeConfiguration implements server.DidChangeConfigurationHandler.
+func (s *Server) DidChangeConfiguration(_ context.Context, params *lsp.DidChangeConfigurationParams) error {
+	raw, err := json.Marshal(params.Settings)
+	if err != nil {
+		slog.Warn("didChangeConfiguration: failed to marshal settings", "error", err)
+		return nil
+	}
+
+	var settings Settings
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		slog.Warn("didChangeConfiguration: failed to unmarshal settings", "error", err)
+		return nil
+	}
+
+	s.mu.Lock()
+	s.settings = settings
+	s.mu.Unlock()
+
+	ttl := settings.RunParamsCacheTTLSeconds
+	if ttl <= 0 {
+		ttl = defaultRunParamsCacheTTLSeconds
+	}
+	s.scanner.SetRunParamsTTL(time.Duration(ttl) * time.Second)
+
+	slog.Info("didChangeConfiguration", "settings", settings)
+	return nil
+}
+
+// DidOpen implements server.TextDocumentSyncHandler.
+func (s *Server) DidOpen(_ context.Context, params *lsp.DidOpenTextDocumentParams) error {
+	uri := string(params.TextDocument.URI)
+	slog.Debug("didOpen", "uri", uri, "language", params.TextDocument.LanguageID)
+
+	if !isSupportedFile(uri) {
+		return nil
+	}
+	s.scheduleAnalyze(uri)
+	return nil
+}
+
+// DidChange implements server.TextDocumentSyncHandler.
+func (s *Server) DidChange(_ context.Context, _ *lsp.DidChangeTextDocumentParams) error {
+	return nil
+}
+
+// DidClose implements server.TextDocumentSyncHandler.
+func (s *Server) DidClose(_ context.Context, _ *lsp.DidCloseTextDocumentParams) error {
+	return nil
+}
+
+// DidSave implements server.TextDocumentSaveHandler.
+func (s *Server) DidSave(_ context.Context, params *lsp.DidSaveTextDocumentParams) error {
+	uri := string(params.TextDocument.URI)
+	slog.Debug("didSave", "uri", uri)
+
+	if !isSupportedFile(uri) {
+		return nil
+	}
+	s.scheduleAnalyze(uri)
+	return nil
+}
+
+// loadConfigAndScan loads the workspace config and runs an initial scan of all projects.
+func (s *Server) loadConfigAndScan() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	progress := newProgressReporter(s.client)
+	progress.Begin(ctx, "Scanning workspace")
+	defer progress.End(ctx, "Scan complete")
+
+	slog.Info("loadConfigAndScan: loading config", "dir", s.workspaceRoot)
+	cfg, err := scanner.LoadConfig(s.workspaceRoot)
+	if err != nil {
+		slog.Error("loadConfigAndScan: failed to load config", "error", err)
+		progress.End(ctx, "Failed to load config")
+		return
+	}
+	s.setConfig(cfg)
+	slog.Info("loadConfigAndScan: config loaded", "projects", len(cfg.Projects))
+
+	totalResources := 0
+	totalViolations := 0
+	totalTagViolations := 0
+
+	for i, project := range cfg.Projects {
+		pct := (i * 100) / len(cfg.Projects)
+		progress.Report(ctx, fmt.Sprintf("Scanning %s...", project.Name), pct)
+
+		s.setScanningProject(project.Name, true)
+
+		start := time.Now()
+		result, err := s.scanner.ScanProject(ctx, s.workspaceRoot, cfg, project)
+		elapsed := time.Since(start)
+
+		s.setScanningProject(project.Name, false)
+
+		if err != nil {
+			slog.Error("loadConfigAndScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
+			continue
+		}
+
+		slog.Info("loadConfigAndScan: project scanned",
+			"name", project.Name,
+			"resources", len(result.Resources),
+			"violations", len(result.Violations),
+			"tag_violations", len(result.TagViolations),
+			"elapsed", elapsed,
+		)
+
+		totalResources += len(result.Resources)
+		totalViolations += len(result.Violations)
+		totalTagViolations += len(result.TagViolations)
+
+		s.setProjectResult(project.Name, result)
+		s.refreshCodeLenses()
+		s.refreshInlayHints()
+		s.publishDiagnostics()
+	}
+
+	progress.End(ctx, fmt.Sprintf("Scan complete — %d resources, %d violations, %d tag issues", totalResources, totalViolations, totalTagViolations))
+}
+
+// refreshInlayHints asks the client to re-request inlay hints.
+func (s *Server) refreshInlayHints() {
+	if s.client == nil {
+		slog.Warn("refreshInlayHints: client not available yet")
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		slog.Debug("refreshInlayHints: sending workspace/inlayHint/refresh")
+		if err := s.client.InlayHintRefresh(ctx); err != nil {
+			slog.Warn("refreshInlayHints: failed", "error", err)
+			return
+		}
+		slog.Debug("refreshInlayHints: client acknowledged")
+	}()
+}
+
+// refreshCodeLenses asks the client to re-request code lenses.
+func (s *Server) refreshCodeLenses() {
+	if s.client == nil {
+		slog.Warn("refreshCodeLenses: client not available yet")
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		slog.Debug("refreshCodeLenses: sending workspace/codeLens/refresh")
+		if err := s.client.CodeLensRefresh(ctx); err != nil {
+			slog.Warn("refreshCodeLenses: failed", "error", err)
+			return
+		}
+		slog.Debug("refreshCodeLenses: client acknowledged")
+	}()
+}
+
+func (s *Server) getMergedResult() *scanner.ScanResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	merged := &scanner.ScanResult{}
+	for _, r := range s.projectResults {
+		if r == nil {
+			continue
+		}
+		merged.Resources = append(merged.Resources, r.Resources...)
+		merged.ModuleCosts = append(merged.ModuleCosts, r.ModuleCosts...)
+		merged.Violations = append(merged.Violations, r.Violations...)
+		merged.TagViolations = append(merged.TagViolations, r.TagViolations...)
+		merged.Errors = append(merged.Errors, r.Errors...)
+	}
+	return merged
+}
+
+func (s *Server) setProjectResult(name string, result *scanner.ScanResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectResults[name] = result
+}
+
+func (s *Server) setScanningProject(name string, scanning bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if scanning {
+		s.scanningProjects[name] = struct{}{}
+	} else {
+		delete(s.scanningProjects, name)
+	}
+}
+
+func (s *Server) isScanning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.scanningProjects) > 0
+}
+
+// resetState cancels all in-flight scans, stops debounce timers, and clears
+// cached results. Used when the workspace root changes.
+func (s *Server) resetState() {
+	s.mu.Lock()
+	for name, t := range s.scanTimers {
+		t.Stop()
+		delete(s.scanTimers, name)
+	}
+	for name, cancel := range s.scanCancels {
+		cancel()
+		delete(s.scanCancels, name)
+	}
+	s.config = nil
+	s.projectResults = make(map[string]*scanner.ScanResult)
+	s.scanningProjects = make(map[string]struct{})
+	s.filesWithDiagnostics = make(map[string]struct{})
+	s.mu.Unlock()
+}
+
+func (s *Server) getConfig() *repoconfig.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config
+}
+
+func (s *Server) setConfig(cfg *repoconfig.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config = cfg
+}
+
+// findProjectForFile returns the project whose path is a prefix of filePath.
+// If multiple projects match (nested paths), the most specific one wins.
+func findProjectForFile(cfg *repoconfig.Config, rootDir, filePath string) *repoconfig.Project {
+	var best *repoconfig.Project
+	bestLen := 0
+
+	for _, p := range cfg.Projects {
+		projDir := filepath.Clean(filepath.Join(rootDir, p.Path))
+		// Check if the file is under this project's directory.
+		if strings.HasPrefix(filePath, projDir+string(filepath.Separator)) || filePath == projDir {
+			if len(projDir) > bestLen {
+				best = p
+				bestLen = len(projDir)
+			}
+		}
+	}
+	return best
+}
+
+func uriToPath(uri string) string {
+	if strings.HasPrefix(uri, "file://") {
+		u, err := url.Parse(uri)
+		if err == nil {
+			return u.Path
+		}
+	}
+	return uri
+}
+
+func pathToURI(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return fmt.Sprintf("file://%s", abs)
+}
+
+func isSupportedFile(uri string) bool {
+	if strings.HasSuffix(uri, ".tf") {
+		return true
+	}
+
+	// For YAML/JSON, only trigger on CloudFormation-related filenames
+	// to avoid noise from package.json, tsconfig.json, docker-compose.yml, etc.
+	base := filepath.Base(uriToPath(uri))
+	lower := strings.ToLower(base)
+	for _, pattern := range []string{"template", "cloudformation", "cfn", "stack", "infracost"} {
+		if strings.Contains(lower, pattern) {
+			for _, ext := range []string{".yml", ".yaml", ".json"} {
+				if strings.HasSuffix(lower, ext) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func ptrTo[T any](v T) *T {
+	return &v
+}
