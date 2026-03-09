@@ -6,9 +6,9 @@ import (
 	"os"
 
 	"github.com/hashicorp/go-hclog"
-	"github.com/infracost/cli-poc/pkg/auth"
-	"github.com/infracost/cli-poc/pkg/environment"
-	cliplugins "github.com/infracost/cli-poc/pkg/plugins"
+	"github.com/infracost/cli/pkg/auth"
+	"github.com/infracost/cli/pkg/environment"
+	cliplugins "github.com/infracost/cli/pkg/plugins"
 	"golang.org/x/oauth2"
 )
 

@@ -22,7 +22,7 @@ A Language Server Protocol (LSP) server that shows cloud cost estimates inline w
 ## Quickstart
 
 > [!IMPORTANT]
-> You need to have done a `login` with the [new cli](https://github.com/infracost/cli-poc) - this will create your token file that the lsp currently piggy backs on. Without this, a lot of functionality wont work because it can't get your org, talk to the pricing server, talk to dashboard or anything.
+> You need to have done a `login` with the [new cli](https://github.com/infracost/cli) - this will create your token file that the lsp currently piggy backs on. Without this, a lot of functionality wont work because it can't get your org, talk to the pricing server, talk to dashboard or anything.
 
 When you've done the `login` dance, you're ready to use the make target of your choice...
 

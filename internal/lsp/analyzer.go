@@ -48,7 +48,7 @@ func (s *Server) scheduleAnalyze(uri string) {
 			cancel()
 			delete(s.scanCancels, projectName)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: intentionally outlives request; cancel stored in scanCancels
 		s.scanCancels[projectName] = cancel
 		s.mu.Unlock()
 

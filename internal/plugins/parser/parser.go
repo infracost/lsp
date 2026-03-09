@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-hclog"
-	cliparser "github.com/infracost/cli-poc/pkg/plugins/parser"
+	cliparser "github.com/infracost/cli/pkg/plugins/parser"
 	"github.com/infracost/lsp/internal/plugins/client"
 	"github.com/infracost/proto/gen/go/infracost/parser/api"
 )

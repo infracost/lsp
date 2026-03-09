@@ -9,7 +9,7 @@ let client;
 let resourceViewProvider;
 function createClient() {
     const config = vscode_1.workspace.getConfiguration("infracost");
-    const serverPath = config.get("serverPath", "infracost-lsp");
+    const serverPath = config.get("serverPath", "infracost-ls");
     const env = { ...process.env };
     const debugUI = config.get("debugUI", "");
     if (debugUI) {

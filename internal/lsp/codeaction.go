@@ -75,11 +75,24 @@ var (
 func (s *Server) CodeAction(_ context.Context, params *lsp.CodeActionParams) ([]lsp.CodeAction, error) {
 	uri := string(params.TextDocument.URI)
 	actions := make([]lsp.CodeAction, 0, len(params.Context.Diagnostics))
+	seenIgnore := make(map[string]struct{})
 
-	slog.Debug("codeAction: request", "uri", uri, "diagnostics", len(params.Context.Diagnostics))
+	slog.Debug("codeAction: request", "uri", uri,
+		"diagnostics", len(params.Context.Diagnostics),
+		"range_start", params.Range.Start.Line,
+		"range_end", params.Range.End.Line,
+	)
 
-	for _, d := range params.Context.Diagnostics {
-		slog.Debug("codeAction: diagnostic", "source", d.Source, "code", string(d.Code), "message", d.Message, "line", d.Range.Start.Line)
+	// Filter diagnostics to only those matching the request range when
+	// possible. When triggered from a specific diagnostic (lightbulb,
+	// problems panel), params.Range matches that diagnostic's range exactly.
+	diagnostics := filterDiagnosticsToRange(params.Context.Diagnostics, params.Range)
+
+	for _, d := range diagnostics {
+		slog.Debug("codeAction: diagnostic", "source", d.Source, "code", string(d.Code), "message", d.Message,
+			"diag_start", d.Range.Start.Line, "diag_end", d.Range.End.Line,
+			"params_start", params.Range.Start.Line, "params_end", params.Range.End.Line,
+		)
 
 		if d.Source != "infracost" {
 			continue
@@ -93,7 +106,7 @@ func (s *Server) CodeAction(_ context.Context, params *lsp.CodeActionParams) ([]
 
 		// Tag policy diagnostics have codes prefixed with "tag:".
 		if policyName, ok := strings.CutPrefix(code, "tag:"); ok {
-			actions = append(actions, s.tagViolationCodeActions(uri, policyName, d)...)
+			actions = append(actions, s.tagViolationCodeActions(uri, policyName, d, seenIgnore)...)
 			continue
 		}
 
@@ -123,30 +136,32 @@ func (s *Server) CodeAction(_ context.Context, params *lsp.CodeActionParams) ([]
 					IsPreferred: ptrTo(true),
 					Edit:        edit,
 				})
-				continue
 			}
+		} else {
+			// No auto-fix available. Return a disabled action with the
+			// violation description so coding agents can see the suggested fix.
+			kind := lsp.CodeActionQuickFix
+			actions = append(actions, lsp.CodeAction{
+				Title:       v.Message,
+				Kind:        &kind,
+				Diagnostics: []lsp.Diagnostic{d},
+				Disabled: &struct {
+					Reason string `json:"reason"`
+				}{
+					Reason: "Requires manual changes",
+				},
+			})
 		}
 
-		// No auto-fix available. Return a disabled action with the
-		// violation description so coding agents can see the suggested fix.
-		kind := lsp.CodeActionQuickFix
-		actions = append(actions, lsp.CodeAction{
-			Title:       v.Message,
-			Kind:        &kind,
-			Diagnostics: []lsp.Diagnostic{d},
-			Disabled: &struct {
-				Reason string `json:"reason"`
-			}{
-				Reason: "Requires manual changes",
-			},
-		})
+		absPath, _ := filepath.Abs(v.Filename)
+		actions = append(actions, deduplicatedDismissActions(d, absPath, v.Address, code, seenIgnore)...)
 	}
 
 	return actions, nil
 }
 
 // tagViolationCodeActions builds code actions for a tag policy diagnostic.
-func (s *Server) tagViolationCodeActions(uri, policyName string, d lsp.Diagnostic) []lsp.CodeAction {
+func (s *Server) tagViolationCodeActions(uri, policyName string, d lsp.Diagnostic, seenIgnore map[string]struct{}) []lsp.CodeAction {
 	v := s.findTagViolation(uri, policyName, d.Range)
 	if v == nil {
 		slog.Debug("codeAction: no matching tag violation", "uri", uri, "policy", policyName, "line", d.Range.Start.Line)
@@ -155,9 +170,13 @@ func (s *Server) tagViolationCodeActions(uri, policyName string, d lsp.Diagnosti
 
 	var actions []lsp.CodeAction
 
-	// For invalid tags with a suggestion, offer a replacement edit.
+	// Match the diagnostic message back to the specific invalid tag.
 	for _, it := range v.InvalidTags {
 		if it.Suggestion == "" {
+			continue
+		}
+		// Only offer a fix for the invalid tag that matches this diagnostic.
+		if !strings.Contains(d.Message, it.Key+"="+it.Value) {
 			continue
 		}
 		fix := attributeFix{
@@ -185,7 +204,7 @@ func (s *Server) tagViolationCodeActions(uri, policyName string, d lsp.Diagnosti
 	if len(actions) == 0 {
 		kind := lsp.CodeActionQuickFix
 		actions = append(actions, lsp.CodeAction{
-			Title:       v.Message,
+			Title:       d.Message,
 			Kind:        &kind,
 			Diagnostics: []lsp.Diagnostic{d},
 			Disabled: &struct {
@@ -196,7 +215,19 @@ func (s *Server) tagViolationCodeActions(uri, policyName string, d lsp.Diagnosti
 		})
 	}
 
+	absPath, _ := filepath.Abs(v.Filename)
+	slug := tagDiagnosticSlug(v.PolicyName, d.Message)
+	actions = append(actions, deduplicatedDismissActions(d, absPath, v.Address, slug, seenIgnore)...)
+
 	return actions
+}
+
+// tagDiagnosticSlug builds a unique slug for a specific tag diagnostic by
+// combining the policy name with the diagnostic message. This ensures that
+// "Missing tag: Environment" and "Missing tag: Team" under the same policy
+// get distinct ignore entries.
+func tagDiagnosticSlug(policyName, message string) string {
+	return "tag:" + policyName + ":" + message
 }
 
 // findTagViolation matches a diagnostic back to a cached TagViolation.
@@ -340,6 +371,83 @@ func makeEdit(uri string, line, startChar, length int, newText string) *lsp.Work
 			},
 		},
 	}
+}
+
+// deduplicatedDismissActions returns dismiss code actions, skipping any whose
+// slug has already been seen. This prevents duplicate entries when the client
+// sends multiple diagnostics for the same resource range.
+func deduplicatedDismissActions(d lsp.Diagnostic, absPath, resource, slug string, seen map[string]struct{}) []lsp.CodeAction {
+	if _, ok := seen[slug]; ok {
+		return nil
+	}
+	seen[slug] = struct{}{}
+
+	kind := lsp.CodeActionQuickFix
+
+	marshalArg := func(v string) json.RawMessage {
+		b, _ := json.Marshal(v)
+		return b
+	}
+
+	return []lsp.CodeAction{
+		{
+			Title:       fmt.Sprintf("Dismiss '%s' for this resource", dismissLabel(slug)),
+			Kind:        &kind,
+			Diagnostics: []lsp.Diagnostic{d},
+			Command: &lsp.Command{
+				Title:   "Dismiss diagnostic",
+				Command: "infracost.dismissDiagnostic",
+				Arguments: []json.RawMessage{
+					marshalArg(absPath),
+					marshalArg(resource),
+					marshalArg(slug),
+				},
+			},
+		},
+		{
+			Title:       fmt.Sprintf("Dismiss '%s' everywhere", dismissLabel(slug)),
+			Kind:        &kind,
+			Diagnostics: []lsp.Diagnostic{d},
+			Command: &lsp.Command{
+				Title:   "Dismiss diagnostic globally",
+				Command: "infracost.dismissDiagnostic",
+				Arguments: []json.RawMessage{
+					marshalArg("*"),
+					marshalArg("*"),
+					marshalArg(slug),
+				},
+			},
+		},
+	}
+}
+
+// dismissLabel returns a human-readable label for a dismiss action title.
+// For tag slugs of the form "tag:policyName:message", it extracts just the
+// message portion. For all other slugs it returns them unchanged.
+func dismissLabel(slug string) string {
+	if after, ok := strings.CutPrefix(slug, "tag:"); ok {
+		if _, msg, found := strings.Cut(after, ":"); found {
+			return msg
+		}
+	}
+	return slug
+}
+
+// filterDiagnosticsToRange returns only the diagnostics whose range exactly
+// matches r. If no diagnostics match exactly (e.g. when triggered from a
+// cursor position rather than a specific diagnostic), all are returned.
+func filterDiagnosticsToRange(diagnostics []lsp.Diagnostic, r lsp.Range) []lsp.Diagnostic {
+	var matched []lsp.Diagnostic
+	for _, d := range diagnostics {
+		if d.Range.Start.Line == r.Start.Line && d.Range.End.Line == r.End.Line &&
+			d.Range.Start.Character == r.Start.Character && d.Range.End.Character == r.End.Character {
+			matched = append(matched, d)
+		}
+	}
+	if len(matched) > 0 {
+		return matched
+	}
+	return diagnostics
 }
 
 // diagnosticPolicySlug extracts the policy slug from a diagnostic's Code field.

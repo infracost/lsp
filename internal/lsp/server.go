@@ -16,6 +16,7 @@ import (
 
 	repoconfig "github.com/infracost/config"
 
+	"github.com/infracost/lsp/internal/ignore"
 	"github.com/infracost/lsp/internal/scanner"
 	"github.com/infracost/lsp/version"
 )
@@ -31,6 +32,7 @@ type Server struct {
 	scanner *scanner.Scanner
 	client  *server.Client
 	srv     *server.Server
+	ignores *ignore.Store
 
 	mu             sync.RWMutex
 	settings       Settings
@@ -63,8 +65,14 @@ type Server struct {
 }
 
 func NewServer(s *scanner.Scanner) *Server {
+	ignores, err := ignore.NewStore()
+	if err != nil {
+		slog.Warn("failed to load ignore store", "error", err)
+	}
+
 	return &Server{
 		scanner:              s,
+		ignores:              ignores,
 		projectResults:       make(map[string]*scanner.ScanResult),
 		filesWithDiagnostics: make(map[string]struct{}),
 		scanningProjects:     make(map[string]struct{}),
@@ -107,7 +115,7 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 	s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
 
 	if s.workspaceRoot != "" {
-		go s.loadConfigAndScan()
+		go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
 	}
 
 	enabled := true
@@ -132,7 +140,9 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 					ChangeNotifications: &enabled,
 				},
 			},
-			ExecuteCommandProvider: &lsp.ExecuteCommandOptions{},
+			ExecuteCommandProvider: &lsp.ExecuteCommandOptions{
+				Commands: []string{"infracost.dismissDiagnostic"},
+			},
 		},
 		ServerInfo: &lsp.ServerInfo{
 			Name:    "infracost-ls",
@@ -141,11 +151,38 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 	}, nil
 }
 
-// ExecuteCommand is a no-op stub. Commands like infracost.revealResource are
-// handled client-side by the VS Code extension; this exists only to satisfy
-// the LSP ExecuteCommandProvider capability.
-func (s *Server) ExecuteCommand(_ context.Context, _ *lsp.ExecuteCommandParams) (any, error) {
+// ExecuteCommand implements server.ExecuteCommandHandler.
+func (s *Server) ExecuteCommand(_ context.Context, params *lsp.ExecuteCommandParams) (any, error) {
+	if params.Command == "infracost.dismissDiagnostic" {
+		return nil, s.handleDismissDiagnostic(params.Arguments)
+	}
 	return nil, nil
+}
+
+func (s *Server) handleDismissDiagnostic(args []json.RawMessage) error {
+	if len(args) != 3 {
+		return fmt.Errorf("dismissDiagnostic: expected 3 arguments, got %d", len(args))
+	}
+
+	var absPath, resource, slug string
+	if err := json.Unmarshal(args[0], &absPath); err != nil {
+		return fmt.Errorf("dismissDiagnostic: invalid path argument: %w", err)
+	}
+	if err := json.Unmarshal(args[1], &resource); err != nil {
+		return fmt.Errorf("dismissDiagnostic: invalid resource argument: %w", err)
+	}
+	if err := json.Unmarshal(args[2], &slug); err != nil {
+		return fmt.Errorf("dismissDiagnostic: invalid slug argument: %w", err)
+	}
+
+	slog.Info("dismissDiagnostic", "path", absPath, "resource", resource, "slug", slug)
+
+	if err := s.ignores.Add(absPath, resource, slug); err != nil {
+		return fmt.Errorf("dismissDiagnostic: failed to add ignore: %w", err)
+	}
+
+	s.publishDiagnostics()
+	return nil
 }
 
 // Shutdown implements server.LifecycleHandler.
@@ -183,7 +220,7 @@ func (s *Server) DidChangeWorkspaceFolders(_ context.Context, params *lsp.DidCha
 
 	s.resetState()
 	s.workspaceRoot = newRoot
-	go s.loadConfigAndScan()
+	go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
 
 	return nil
 }

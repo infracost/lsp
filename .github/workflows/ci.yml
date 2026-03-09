@@ -25,7 +25,7 @@ jobs:
           app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
           private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
           owner: ${{ env.TARGET_ORG }}
-          repositories: cli-poc,config
+          repositories: cli,config
 
       - run: |
           git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
@@ -50,7 +50,7 @@ jobs:
           app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
           private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
           owner: ${{ env.TARGET_ORG }}
-          repositories: cli-poc,config
+          repositories: cli,config
 
       - run: |
           git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
@@ -77,7 +77,7 @@ jobs:
           app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
           private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
           owner: ${{ env.TARGET_ORG }}
-          repositories: cli-poc,config
+          repositories: cli,config
 
       - run: |
           git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"

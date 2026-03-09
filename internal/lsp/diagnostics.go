@@ -44,10 +44,23 @@ func (s *Server) publishDiagnostics() {
 	}
 
 	for _, v := range result.Violations {
+		absPath, _ := filepath.Abs(v.Filename)
+		if s.ignores.IsIgnored(absPath, v.Address, v.PolicySlug) {
+			continue
+		}
 		addDiag(v.Filename, finopsViolationToDiagnostic(v))
 	}
 	for _, v := range result.TagViolations {
-		addDiag(v.Filename, tagViolationToDiagnostics(v))
+		diags := tagViolationToDiagnostics(v)
+		absPath, _ := filepath.Abs(v.Filename)
+		filtered := diags[:0]
+		for _, d := range diags {
+			slug := tagDiagnosticSlug(v.PolicyName, d.Message)
+			if !s.ignores.IsIgnored(absPath, v.Address, slug) {
+				filtered = append(filtered, d)
+			}
+		}
+		addDiag(v.Filename, filtered)
 	}
 
 	s.mu.Lock()

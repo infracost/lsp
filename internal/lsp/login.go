@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/infracost/cli-poc/pkg/auth"
-	"github.com/infracost/cli-poc/pkg/environment"
+	"github.com/infracost/cli/pkg/auth"
+	"github.com/infracost/cli/pkg/environment"
 	"github.com/owenrumney/go-lsp/lsp"
 	"golang.org/x/oauth2"
 )
@@ -81,7 +81,7 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	s.showMessage(ctx, lsp.MessageTypeInfo, "Logged in to Infracost")
 
 	if s.workspaceRoot != "" {
-		go s.loadConfigAndScan()
+		go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
 	}
 }
 

@@ -142,7 +142,7 @@ func TestCodeAction(t *testing.T) {
 		wantDisabled bool
 	}{
 		{
-			name: "parseable description produces edit action",
+			name: "parseable description produces edit action plus ignore actions",
 			diagnostics: []lsp.Diagnostic{
 				{
 					Source:  "infracost",
@@ -151,11 +151,11 @@ func TestCodeAction(t *testing.T) {
 					Range:   lsp.Range{Start: lsp.Position{Line: 0}},
 				},
 			},
-			wantCount: 1,
+			wantCount: 3,
 			wantTitle: "Switch `instance_type` from `t3.medium` to `t4g.medium` — saves $5.00/mo",
 		},
 		{
-			name: "unparseable description produces disabled action with hint",
+			name: "unparseable description produces disabled action plus ignore actions",
 			diagnostics: []lsp.Diagnostic{
 				{
 					Source:  "infracost",
@@ -164,7 +164,7 @@ func TestCodeAction(t *testing.T) {
 					Range:   lsp.Range{Start: lsp.Position{Line: 0}},
 				},
 			},
-			wantCount:    1,
+			wantCount:    3,
 			wantTitle:    "Add a `aws_ecr_lifecycle_policy` resource to define image lifecycle rules",
 			wantDisabled: true,
 		},

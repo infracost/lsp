@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/go-hclog"
-	cliprovider "github.com/infracost/cli-poc/pkg/plugins/providers"
+	cliprovider "github.com/infracost/cli/pkg/plugins/providers"
 	"github.com/infracost/lsp/internal/plugins/client"
 	proto "github.com/infracost/proto/gen/go/infracost/provider"
 )
