@@ -900,7 +900,6 @@ func loadOrGenerateConfig(dir string) (*repoconfig.Config, error) {
 	slog.Debug("loadConfig: no infracost.yml, auto-generating config", "dir", dir)
 
 	opts := []repoconfig.GenerationOption{
-		repoconfig.WithCloudFormationSupport(),
 		repoconfig.WithEnvVars(env),
 	}
 

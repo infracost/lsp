@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.7.0 // indirect
-	github.com/infracost/config v0.3.8
+	github.com/infracost/config v0.3.15
 	github.com/infracost/go-proto v0.2.1
 	github.com/infracost/proto v1.21.0
 	github.com/owenrumney/go-lsp v0.0.8
