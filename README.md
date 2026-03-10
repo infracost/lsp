@@ -1,7 +1,10 @@
 # Infracost LSP
 
-> [!IMPORTANT]
-> Early Stage PoC - thing may not work they way you expect or we want them too!
+> [!WARNING]
+>
+> This repository is in early alpha. Features may change and rough edges are expected.
+> [Open a discussion thread](https://github.com/infracost/infracost/discussions) to report bugs or
+> share feedback — it is genuinely appreciated.
 
 A Language Server Protocol (LSP) server that shows cloud cost estimates inline while editing Terraform and CloudFormation files. It talks directly to the Infracost parser and provider gRPC plugins to analyze IaC and return costs.
 
