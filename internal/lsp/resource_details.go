@@ -115,10 +115,10 @@ func (s *Server) HandleResourceDetails(_ context.Context, params json.RawMessage
 		}
 
 		detail := buildResourceDetail(r, violationsByAddr[r.Name], tagViolationsByAddr[r.Name])
-		return ResourceDetailsResult{Resource: &detail}, nil
+		return ResourceDetailsResult{Resource: &detail, NeedsLogin: needsLogin}, nil
 	}
 
-	return ResourceDetailsResult{}, nil
+	return ResourceDetailsResult{NeedsLogin: needsLogin}, nil
 }
 
 func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsViolation, tagViolations []scanner.TagViolation) ResourceDetail {
