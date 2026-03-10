@@ -511,11 +511,12 @@ func isSupportedFile(uri string) bool {
 }
 
 func isCloudFormationFile(path string) bool {
-	f, err := os.Open(path)
+	cleanPath := filepath.Clean(path)
+	f, err := os.Open(cleanPath) //nolint:gosec // path is from trusted LSP workspace URIs
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
