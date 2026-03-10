@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -15,9 +17,18 @@ import (
 	"github.com/infracost/lsp/internal/plugins/parser"
 	"github.com/infracost/lsp/internal/plugins/providers"
 	"github.com/infracost/lsp/internal/scanner"
+	"github.com/infracost/lsp/version"
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.Version)
+		os.Exit(0)
+	}
+
 	cfg := config.Load(context.Background())
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
