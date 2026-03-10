@@ -1,11 +1,13 @@
 package lsp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -497,21 +499,30 @@ func pathToURI(path string) string {
 }
 
 func isSupportedFile(uri string) bool {
-	if strings.HasSuffix(uri, ".tf") {
+	if strings.HasSuffix(uri, ".tf") || strings.HasSuffix(uri, ".hcl") {
 		return true
 	}
 
-	// For YAML/JSON, only trigger on CloudFormation-related filenames
-	// to avoid noise from package.json, tsconfig.json, docker-compose.yml, etc.
-	base := filepath.Base(uriToPath(uri))
-	lower := strings.ToLower(base)
-	for _, pattern := range []string{"template", "cloudformation", "cfn", "stack", "infracost"} {
-		if strings.Contains(lower, pattern) {
-			for _, ext := range []string{".yml", ".yaml", ".json"} {
-				if strings.HasSuffix(lower, ext) {
-					return true
-				}
-			}
+	lower := strings.ToLower(uri)
+	if strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".json") {
+		return isCloudFormationFile(uriToPath(uri))
+	}
+	return false
+}
+
+func isCloudFormationFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "Resources:") || strings.HasPrefix(line, "AWSTemplateFormatVersion:") ||
+			strings.Contains(line, `"Resources"`) || strings.Contains(line, `"AWSTemplateFormatVersion"`) {
+			return true
 		}
 	}
 	return false
