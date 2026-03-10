@@ -20,35 +20,23 @@ A Language Server Protocol (LSP) server that shows cloud cost estimates inline w
 ## Prerequisites
 
 - Go 1.25+
-- Node.js 18+ (for the VS Code extension)
 - Infracost parser and provider plugins (gRPC binaries)
 
-![alt text](vscode.png)
+## Editor Extensions
+
+> [!NOTE]
+> These extensions are in beta. Formal marketplace releases are coming soon.
+
+- **VS Code**: [vscode-infracost v0.3.0-beta.2](https://github.com/infracost/vscode-infracost/releases/tag/v0.3.0-beta.2)
+- **JetBrains**: [jetbrains-infracost v2.0.0-beta.1](https://github.com/infracost/jetbrains-infracost/releases/tag/v2.0.0-beta.1)
 
 ## Quickstart
 
 > [!IMPORTANT]
-> You need to have done a `login` with the [new cli](https://github.com/infracost/cli) - this will create your token file that the lsp currently piggy backs on. Without this, a lot of functionality wont work because it can't get your org, talk to the pricing server, talk to dashboard or anything.
+> You need to have done a `login` with the [new cli](https://github.com/infracost/cli) - this will create your token file that the LSP currently piggy backs on. Without this, a lot of functionality won't work because it can't get your org, talk to the pricing server, talk to the dashboard, or anything.
 
-When you've done the `login` dance, you're ready to use the make target of your choice...
-
-Each editor has a single `make` target that builds the LSP server, installs it, and launches the editor with the plugin loaded:
-
-```bash
-# VS Code
-make vscode-run
-
-# Neovim (DIR= to open a specific directory)
-make nvim-run DIR=~/my-terraform-project
-
-# JetBrains (IntelliJ / GoLand with Ultimate)
-make jetbrains-run
-```
-
-> [!WARNING]
-> Use of the native LSP integration requires a JetBrains license, community editions won't work. We may need to switch to a 3rd party to support community but not convinced of the value in that yet.
-
-Open a `.tf` file and cost estimates should appear above resource blocks.
+1. Install one of the editor extensions above.
+2. Open a directory containing `.tf`, `.yaml`, or `.json` IaC files. Cost lenses should appear above resource blocks.
 
 ## Configuration
 
@@ -91,7 +79,7 @@ Dismissed violations are stored in a local JSON file at `$XDG_CONFIG_HOME/infrac
 
 ```mermaid
 sequenceDiagram
-    participant Editor as Editor (VS Code / Neovi / JetBrains)
+    participant Editor as Editor (VS Code / Neovim / JetBrains)
     participant LSP as infracost-ls
     participant Parser as Parser Plugin (gRPC)
     participant Provider as Provider Plugin (gRPC)
@@ -115,56 +103,55 @@ sequenceDiagram
 
 The server re-scans the affected project on file open or save. Rapid saves are debounced per project — only one scan runs at a time, and a new save cancels any in-flight scan. Results are cached per project and used to serve code lens and hover requests.
 
-## VS Code Setup
+## Vim / Neovim
 
-1. Build the LSP binary and ensure it's in your PATH (or note the absolute path):
+The LSP server communicates over stdio and follows the LSP 3.16 spec, so it works with any editor that has LSP support.
 
-   ```bash
-   make build
-   export PATH="$PWD/bin:$PATH"
-   ```
+For Neovim, add the following to your config (or adapt it for your plugin manager):
 
-2. Install the VS Code extension:
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "terraform",
+  callback = function()
+    local root = vim.fs.dirname(vim.fs.find("infracost.yml", { upward = true })[1])
+      or vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":p:h")
+    vim.lsp.start({
+      name = "infracost",
+      cmd = { "infracost-ls" },
+      root_dir = root,
+      capabilities = vim.lsp.protocol.make_client_capabilities(),
+    })
+  end,
+})
+```
 
-   ```bash
-   cd plugins/vscode
-   npm install
-   npm run compile
-   ```
+This starts the LSP client automatically when opening `.tf` files. Make sure `infracost-ls` is on your `PATH` (see Development below).
 
-   Then in VS Code: **Extensions** → **...** → **Install from VSIX** or use the `--extensionDevelopmentPath` flag:
+## Development
 
-   ```bash
-   code --extensionDevelopmentPath=$PWD/plugins/vscode
-   ```
+### Building
 
-3. Open a directory containing `.tf`, `.yaml`, or `.json` IaC files. Cost lenses should appear above resource blocks.
+```bash
+make build      # build to bin/infracost-ls
+make install    # build and copy to ~/go/bin/
+```
 
-### VS Code Extension Settings
+### Testing with Neovim
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `infracost.serverPath` | Path to the `infracost-ls` binary | `infracost-ls` |
-| `infracost.runParamsCacheTTLSeconds` | How long (seconds) to cache org policies between API calls. `0` to disable. | `300` |
+A minimal Neovim plugin is included for quick iteration:
 
-## Neovim Setup
+```bash
+make nvim-run DIR=~/my-terraform-project
+```
 
-A minimal Neovim plugin is included at `plugins/neovim/`. It automatically starts the LSP client for Terraform files.
+### Testing with VS Code
 
-1. Build and install the LSP binary:
+1. Install the [VS Code extension](https://github.com/infracost/vscode-infracost/releases/tag/v0.3.0-beta.2).
+2. In VS Code settings, set `infracost.serverPath` to your local build (e.g. `~/go/bin/infracost-ls`).
+3. Reload the window. The extension will use your local LSP binary.
 
-   ```bash
-   make install
-   ```
+### Testing with JetBrains
 
-2. Add the plugin to your runtime path, or use `make nvim-debug` to launch Neovim with it loaded:
-
-   ```bash
-   make nvim-debug
-   ```
-
-3. Open a `.tf` file. `:LspInfo` should show the infracost server attached.
-
-## Using with Other Editors
-
-The LSP server communicates over stdio and follows the LSP 3.16 spec. Any editor with LSP support can use it.
+1. Install the [JetBrains plugin](https://github.com/infracost/jetbrains-infracost/releases/tag/v2.0.0-beta.1).
+2. Configure the plugin to point to your local `infracost-ls` binary.
+3. Restart the IDE.

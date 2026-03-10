@@ -1,7 +1,2 @@
-plugins/vscode/node_modules
-plugins/jetbrains/.gradle
-plugins/jetbrains/.intellijPlatform
-plugins/jetbrains/.kotlin
-plugins/jetbrains/build
 bin
 dist

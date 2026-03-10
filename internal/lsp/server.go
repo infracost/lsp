@@ -154,9 +154,9 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 // ExecuteCommand implements server.ExecuteCommandHandler.
 func (s *Server) ExecuteCommand(_ context.Context, params *lsp.ExecuteCommandParams) (any, error) {
 	if params.Command == "infracost.dismissDiagnostic" {
-		return nil, s.handleDismissDiagnostic(params.Arguments)
+		return json.RawMessage("null"), s.handleDismissDiagnostic(params.Arguments)
 	}
-	return nil, nil
+	return json.RawMessage("null"), nil
 }
 
 func (s *Server) handleDismissDiagnostic(args []json.RawMessage) error {
