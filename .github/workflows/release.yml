@@ -24,17 +24,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - uses: infracost/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
-          private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
-          owner: infracost
-          repositories: "cli,config"
-          permission-contents: write
-
-      - run: |
-          git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
 
       - uses: goreleaser/goreleaser-action@v6
         with:

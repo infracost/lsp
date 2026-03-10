@@ -19,20 +19,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: infracost/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
-          private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
-          owner: ${{ env.TARGET_ORG }}
-          repositories: cli,config
-
-      - run: |
-          git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
-
-      - name: Configure private Go modules
-        run: git config --global url."https://${{ secrets.GO_PRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
       - run: go test ./...
 
   lint:
@@ -43,20 +29,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - uses: infracost/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
-          private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
-          owner: ${{ env.TARGET_ORG }}
-          repositories: cli,config
-
-      - run: |
-          git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
-
-      - name: Configure private Go modules
-        run: git config --global url."https://${{ secrets.GO_PRIVATE_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - uses: golangci/golangci-lint-action@v7
         with:
@@ -70,17 +42,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - uses: infracost/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.INFRACOST_CI_APP_ID }}
-          private-key: ${{ secrets.INFRACOST_CI_APP_PRIVATE_KEY }}
-          owner: ${{ env.TARGET_ORG }}
-          repositories: cli,config
-
-      - run: |
-          git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
 
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
