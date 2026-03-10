@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
+	"slices"
 
 	"github.com/owenrumney/go-lsp/server"
 
@@ -21,10 +21,7 @@ import (
 )
 
 func main() {
-	showVersion := flag.Bool("version", false, "print the version and exit")
-	flag.Parse()
-
-	if *showVersion {
+	if slices.Contains(os.Args[1:], "--version") || slices.Contains(os.Args[1:], "-version") {
 		fmt.Println(version.Version)
 		os.Exit(0)
 	}
