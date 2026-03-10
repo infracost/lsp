@@ -14,7 +14,7 @@ A Language Server Protocol (LSP) server that shows cloud cost estimates inline w
 ## Prerequisites
 
 - Go 1.25+
-- Node.js 18+ (for the VSCode extension)
+- Node.js 18+ (for the VS Code extension)
 - Infracost parser and provider plugins (gRPC binaries)
 
 ![alt text](vscode.png)
@@ -92,7 +92,7 @@ sequenceDiagram
 
 The server re-scans the affected project on file open or save. Rapid saves are debounced per project — only one scan runs at a time, and a new save cancels any in-flight scan. Results are cached per project and used to serve code lens and hover requests.
 
-## VSCode Setup
+## VS Code Setup
 
 1. Build the LSP binary and ensure it's in your PATH (or note the absolute path):
 
@@ -101,7 +101,7 @@ The server re-scans the affected project on file open or save. Rapid saves are d
    export PATH="$PWD/bin:$PATH"
    ```
 
-2. Install the VSCode extension:
+2. Install the VS Code extension:
 
    ```bash
    cd plugins/vscode
@@ -109,7 +109,7 @@ The server re-scans the affected project on file open or save. Rapid saves are d
    npm run compile
    ```
 
-   Then in VSCode: **Extensions** → **...** → **Install from VSIX** or use the `--extensionDevelopmentPath` flag:
+   Then in VS Code: **Extensions** → **...** → **Install from VSIX** or use the `--extensionDevelopmentPath` flag:
 
    ```bash
    code --extensionDevelopmentPath=$PWD/plugins/vscode
@@ -117,7 +117,7 @@ The server re-scans the affected project on file open or save. Rapid saves are d
 
 3. Open a directory containing `.tf` files. Cost lenses should appear above resource blocks.
 
-### VSCode Extension Settings
+### VS Code Extension Settings
 
 | Setting | Description | Default |
 |---------|-------------|---------|
