@@ -48,23 +48,6 @@ The LSP server is configured via environment variables. Most are optional — th
 | `INFRACOST_LOG_LEVEL` | Log level (`debug` for verbose) | `warn` |
 | `INFRACOST_DEBUG_UI` | Port for debug UI (development only) | _(disabled)_ |
 
-### Plugin overrides (for development/testing)
-
-These override the plugin binaries the server launches. You only need them if the plugins aren't on your `PATH` or you want to test local builds.
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `INFRACOST_CLI_PARSER_PLUGIN` | Path to the parser plugin binary | `infracost-parser-plugin` (from PATH) |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS` | Path to the AWS provider plugin | `infracost-provider-plugin-aws` (from PATH) |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE` | Path to the GCP provider plugin | `infracost-provider-plugin-google` (from PATH) |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURERM` | Path to the Azure provider plugin | `infracost-provider-plugin-azurerm` (from PATH) |
-| `INFRACOST_CLI_PARSER_PLUGIN_VERSION` | Parser plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS_VERSION` | AWS provider plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE_VERSION` | GCP provider plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION` | Azure provider plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PLUGIN_MANIFEST_URL` | URL for the plugin manifest | `https://releases.infracost.io/plugins/manifest.json` |
-
-
 ### Workspace configuration
 
 The server discovers projects from an `infracost.yml` file in the workspace root. This file defines project paths and settings used during scanning.
@@ -125,7 +108,25 @@ vim.api.nvim_create_autocmd("FileType", {
 
 This starts the LSP client automatically when opening `.tf` files. Make sure `infracost-ls` is on your `PATH` (see Development below).
 
-## Development
+<h2>Development</h2>
+<details>
+<summary>Information about developing the LSP</summary>
+
+### Environment variables
+
+These override the plugin binaries the server launches. You only need them if the plugins aren't on your `PATH` or you want to test local builds.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `INFRACOST_CLI_PARSER_PLUGIN` | Path to the parser plugin binary | `infracost-parser-plugin` (from PATH) |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS` | Path to the AWS provider plugin | `infracost-provider-plugin-aws` (from PATH) |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE` | Path to the GCP provider plugin | `infracost-provider-plugin-google` (from PATH) |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURERM` | Path to the Azure provider plugin | `infracost-provider-plugin-azurerm` (from PATH) |
+| `INFRACOST_CLI_PARSER_PLUGIN_VERSION` | Parser plugin version override | _(latest)_ |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS_VERSION` | AWS provider plugin version override | _(latest)_ |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE_VERSION` | GCP provider plugin version override | _(latest)_ |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION` | Azure provider plugin version override | _(latest)_ |
+| `INFRACOST_CLI_PLUGIN_MANIFEST_URL` | URL for the plugin manifest | `https://releases.infracost.io/plugins/manifest.json` |
 
 ### Building
 
@@ -153,3 +154,5 @@ make nvim-run DIR=~/my-terraform-project
 1. Install the [JetBrains plugin](https://github.com/infracost/jetbrains-infracost/releases/tag/v2.0.0-beta.1).
 2. Configure the plugin to point to your local `infracost-ls` binary.
 3. Restart the IDE.
+
+</details>
