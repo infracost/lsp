@@ -77,6 +77,7 @@ func loadPluginsConfig() cliplugins.Config {
 		ManifestURL: "https://releases.infracost.io/plugins/manifest.json",
 	}
 	loadPluginEnv(&cfg)
+	cfg.Process()
 	return cfg
 }
 

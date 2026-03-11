@@ -23,7 +23,7 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 		return nil, nil
 	}
 
-	reqPath := uriToPath(uri)
+	reqPath := filepath.Clean(uriToPath(uri))
 	line := int64(params.Position.Line) + 1 // LSP is 0-based, our data is 1-based
 
 	// Build violations lookup.

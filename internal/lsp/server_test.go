@@ -6,6 +6,101 @@ import (
 	"testing"
 )
 
+func TestUriToPath(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		// Standard file:// URIs — Unix paths
+		{
+			name: "unix absolute path",
+			uri:  "file:///home/user/project/main.tf",
+			want: "/home/user/project/main.tf",
+		},
+		{
+			name: "unix path with spaces (percent-encoded)",
+			uri:  "file:///home/user/my%20project/main.tf",
+			want: "/home/user/my project/main.tf",
+		},
+
+		// Windows file:// URIs — drive letter handling
+		{
+			name: "windows drive letter lowercase",
+			uri:  "file:///c:/Users/owen/project/main.tf",
+			want: "c:/Users/owen/project/main.tf",
+		},
+		{
+			name: "windows drive letter uppercase",
+			uri:  "file:///C:/Users/owen/project/main.tf",
+			want: "C:/Users/owen/project/main.tf",
+		},
+		{
+			name: "windows drive letter with percent-encoded colon",
+			uri:  "file:///c%3A/Users/owen/project/main.tf",
+			want: "c:/Users/owen/project/main.tf",
+		},
+		{
+			name: "windows drive letter uppercase with percent-encoded colon",
+			uri:  "file:///C%3A/Users/owen/project/main.tf",
+			want: "C:/Users/owen/project/main.tf",
+		},
+		{
+			name: "windows path with spaces (percent-encoded)",
+			uri:  "file:///c%3A/Users/owen/example%20terraform/main.tf",
+			want: "c:/Users/owen/example terraform/main.tf",
+		},
+		{
+			name: "windows path with spaces in drive-letter URI",
+			uri:  "file:///c:/Users/owen/example terraform/main.tf",
+			want: "c:/Users/owen/example terraform/main.tf",
+		},
+
+		// Non-file:// inputs — POSIX-style Windows paths without scheme
+		{
+			name: "posix-style windows path without file scheme",
+			uri:  "/c:/Users/owen/project",
+			want: "c:/Users/owen/project",
+		},
+		{
+			name: "posix-style windows path uppercase drive",
+			uri:  "/C:/Users/owen/project",
+			want: "C:/Users/owen/project",
+		},
+
+		// Non-file:// inputs — plain paths passed through unchanged
+		{
+			name: "plain unix path passthrough",
+			uri:  "/home/user/project",
+			want: "/home/user/project",
+		},
+		{
+			name: "empty string",
+			uri:  "",
+			want: "",
+		},
+		{
+			name: "relative path passthrough",
+			uri:  "project/main.tf",
+			want: "project/main.tf",
+		},
+		{
+			name: "non-file scheme passthrough",
+			uri:  "untitled:///untitled-1",
+			want: "untitled:///untitled-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uriToPath(tt.uri)
+			if got != tt.want {
+				t.Errorf("uriToPath(%q)\n  got  %q\n  want %q", tt.uri, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsSupportedFile(t *testing.T) {
 	tests := []struct {
 		name string

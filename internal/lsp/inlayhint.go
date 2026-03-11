@@ -33,7 +33,7 @@ func (s *Server) InlayHint(_ context.Context, params *lsp.InlayHintParams) ([]ls
 		return nil, nil
 	}
 
-	reqPath := uriToPath(uri)
+	reqPath := filepath.Clean(uriToPath(uri))
 	scanning := s.isScanning()
 
 	violationsByAddr := make(map[string][]scanner.FinopsViolation)

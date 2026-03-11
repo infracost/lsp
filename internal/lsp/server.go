@@ -484,8 +484,18 @@ func uriToPath(uri string) string {
 	if strings.HasPrefix(uri, "file://") {
 		u, err := url.Parse(uri)
 		if err == nil {
-			return u.Path
+			path := u.Path
+			// On Windows, url.Parse returns "/c:/path" for "file:///c:/path"
+			// We need to remove the leading slash for Windows drive letters
+			if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+				path = path[1:]
+			}
+			return path
 		}
+	}
+	// Handle POSIX-style Windows paths sent without a file:// prefix, e.g. "/c:/Users/..."
+	if len(uri) >= 3 && uri[0] == '/' && uri[2] == ':' {
+		return uri[1:]
 	}
 	return uri
 }
@@ -494,6 +504,13 @@ func pathToURI(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
+	}
+	// Convert Windows paths to proper URI format
+	// Replace backslashes with forward slashes for URI
+	abs = strings.ReplaceAll(abs, "\\", "/")
+	// Ensure Windows drive letters are properly formatted in URI
+	if len(abs) >= 2 && abs[1] == ':' {
+		abs = "/" + abs
 	}
 	return fmt.Sprintf("file://%s", abs)
 }

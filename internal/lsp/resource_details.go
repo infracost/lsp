@@ -88,7 +88,7 @@ func (s *Server) HandleResourceDetails(_ context.Context, params json.RawMessage
 		return ResourceDetailsResult{NeedsLogin: needsLogin}, nil
 	}
 
-	reqPath := uriToPath(p.URI)
+	reqPath := filepath.Clean(uriToPath(p.URI))
 	line := int64(p.Line) + 1 // LSP is 0-based, our data is 1-based
 
 	violationsByAddr := make(map[string][]scanner.FinopsViolation)

@@ -233,7 +233,7 @@ func tagDiagnosticSlug(policyName, message string) string {
 // findTagViolation matches a diagnostic back to a cached TagViolation.
 func (s *Server) findTagViolation(uri, policyName string, rng lsp.Range) *scanner.TagViolation {
 	result := s.getMergedResult()
-	reqPath := uriToPath(uri)
+	reqPath := filepath.Clean(uriToPath(uri))
 
 	for i, v := range result.TagViolations {
 		if v.PolicyName != policyName {
@@ -256,7 +256,7 @@ func (s *Server) findTagViolation(uri, policyName string, rng lsp.Range) *scanne
 // findViolation matches a diagnostic back to a cached FinopsViolation.
 func (s *Server) findViolation(uri, slug string, rng lsp.Range) *scanner.FinopsViolation {
 	result := s.getMergedResult()
-	reqPath := uriToPath(uri)
+	reqPath := filepath.Clean(uriToPath(uri))
 
 	for i, v := range result.Violations {
 		if v.PolicySlug != slug {
@@ -279,7 +279,7 @@ func (s *Server) findViolation(uri, slug string, rng lsp.Range) *scanner.FinopsV
 // buildAttributeEdit reads the file and builds a WorkspaceEdit that replaces
 // the attribute value within the violation's line range.
 func buildAttributeEdit(uri string, fix attributeFix, v *scanner.FinopsViolation) *lsp.WorkspaceEdit {
-	filePath := uriToPath(uri)
+	filePath := filepath.Clean(uriToPath(uri))
 	content, err := os.ReadFile(filePath) //nolint:gosec // path derived from LSP document URI
 	if err != nil {
 		slog.Warn("buildAttributeEdit: failed to read file", "path", filePath, "error", err)
