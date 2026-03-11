@@ -46,8 +46,6 @@ The LSP server is configured via environment variables. Most are optional — th
 |----------|-------------|---------|
 | `INFRACOST_CLI_CURRENCY` | Currency for cost estimates | `USD` |
 | `INFRACOST_LOG_LEVEL` | Log level (`debug` for verbose) | `warn` |
-| `INFRACOST_CLI_PRICING_ENDPOINT` | Custom pricing API endpoint | `https://pricing.api.infracost.io` |
-| `INFRACOST_CLI_DASHBOARD_ENDPOINT` | Custom dashboard API endpoint | `https://dashboard.api.infracost.io` |
 | `INFRACOST_DEBUG_UI` | Port for debug UI (development only) | _(disabled)_ |
 
 ### Plugin overrides (for development/testing)
@@ -65,7 +63,7 @@ These override the plugin binaries the server launches. You only need them if th
 | `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE_VERSION` | GCP provider plugin version override | _(latest)_ |
 | `INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION` | Azure provider plugin version override | _(latest)_ |
 | `INFRACOST_CLI_PLUGIN_MANIFEST_URL` | URL for the plugin manifest | `https://releases.infracost.io/plugins/manifest.json` |
-| `INFRACOST_CLI_PLUGIN_CACHE_DIRECTORY` | Directory for cached plugin binaries | _(system default)_ |
+
 
 ### Workspace configuration
 
