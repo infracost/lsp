@@ -34,6 +34,7 @@ func (s *Server) HandleLogin(_ context.Context, _ json.RawMessage) (any, error) 
 	cfg := auth.Config{
 		Environment: environment.Production,
 	}
+	cfg.Process()
 	cfg.UseAccessTokenCache = true
 	resp, err := cfg.StartDeviceFlow(ctx)
 	if err != nil {
@@ -70,6 +71,7 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	cfg := auth.Config{
 		Environment: environment.Production,
 	}
+	cfg.Process()
 	cfg.UseAccessTokenCache = true
 	tokenSource, err := cfg.PollDeviceFlow(ctx, resp)
 	if err != nil {

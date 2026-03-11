@@ -59,6 +59,7 @@ func loadAuthToken(ctx context.Context) oauth2.TokenSource {
 	cfg := auth.Config{
 		Environment: environment.Production,
 	}
+	cfg.Process()
 	cfg.UseAccessTokenCache = true
 	tokenSource, _, err := cfg.LoadCache(ctx)
 	if err != nil {
