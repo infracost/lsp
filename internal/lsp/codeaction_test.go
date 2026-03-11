@@ -238,7 +238,7 @@ func TestBuildAttributeEdit(t *testing.T) {
 	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	fileURI := "file://" + tfFile
+	fileURI := pathToURI(tfFile)
 
 	tests := []struct {
 		name        string
@@ -332,7 +332,7 @@ func TestBuildAttributeEditBooleans(t *testing.T) {
 	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	fileURI := "file://" + tfFile
+	fileURI := pathToURI(tfFile)
 
 	// Simulates: Set `copy_tags_to_snapshot` = true (no old value from parser)
 	fix := attributeFix{Attribute: "copy_tags_to_snapshot", NewValue: "true"}
@@ -367,7 +367,7 @@ func TestBuildAttributeEditArrayIndex(t *testing.T) {
 	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
 		t.Fatal(err)
 	}
-	fileURI := "file://" + tfFile
+	fileURI := pathToURI(tfFile)
 
 	// Simulates: Switch `instance_types[0]` from `t3.large` to `t4g.large`
 	fix := attributeFix{Attribute: "instance_types[0]", OldValue: "t3.large", NewValue: "t4g.large"}

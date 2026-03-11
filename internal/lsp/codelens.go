@@ -22,7 +22,7 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 		return nil, nil
 	}
 
-	reqPath := uriToPath(uri)
+	reqPath := filepath.Clean(uriToPath(uri))
 	scanning := s.isScanning()
 
 	// Build maps of resource address → violations.
