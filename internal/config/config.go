@@ -56,8 +56,9 @@ func Load(ctx context.Context) Config {
 }
 
 func loadAuthToken(ctx context.Context) oauth2.TokenSource {
-	cfg := auth.Config{}
-	cfg.ApplyDefaults(environment.Production)
+	cfg := auth.Config{
+		Environment: environment.Production,
+	}
 	cfg.UseAccessTokenCache = true
 	tokenSource, _, err := cfg.LoadCache(ctx)
 	if err != nil {
@@ -75,7 +76,6 @@ func loadPluginsConfig() cliplugins.Config {
 		ManifestURL: "https://releases.infracost.io/plugins/manifest.json",
 	}
 	loadPluginEnv(&cfg)
-	cfg.ApplyDefaults()
 	return cfg
 }
 
