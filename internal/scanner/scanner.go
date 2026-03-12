@@ -927,8 +927,19 @@ func envToMap() map[string]string {
 	return env
 }
 
+type regexReplacement struct {
+	re  *regexp.Regexp
+	rep string
+}
+
 var (
-	reAnchor  = regexp.MustCompile(`<a\s+[^>]*href=["']([^"']*)["'][^>]*>(.*?)</a>`)
+	replaceRegexes = []regexReplacement{
+		{regexp.MustCompile(`<a\s+[^>]*href=["']([^"']*)["'][^>]*>(.*?)</a>`), "[$2]($1)"},
+		{regexp.MustCompile(`<b>(.*?)</b>`), "**${1}**"},
+		{regexp.MustCompile(`<strong>(.*?)</strong>`), "**${1}**"},
+		{regexp.MustCompile(`<i>(.*?)</i>`), "_${1}_"},
+		{regexp.MustCompile(`<em>(.*?)</em>`), "_${1}_"},
+	}
 	reHTMLTag = regexp.MustCompile(`<[^>]+>`)
 )
 
@@ -936,7 +947,9 @@ var (
 // remaining HTML tags so the output renders cleanly in editors that only
 // support markdown (e.g. Zed, Neovim).
 func htmlToMarkdown(s string) string {
-	s = reAnchor.ReplaceAllString(s, "[$2]($1)")
+	for _, rr := range replaceRegexes {
+		s = rr.re.ReplaceAllString(s, rr.rep)
+	}
 	return reHTMLTag.ReplaceAllString(s, "")
 }
 

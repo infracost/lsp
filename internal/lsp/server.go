@@ -263,6 +263,11 @@ func (s *Server) DidOpen(_ context.Context, params *lsp.DidOpenTextDocumentParam
 	if !isSupportedFile(uri) {
 		return nil
 	}
+
+	if !s.scanner.HasTokenSource() {
+		s.publishAuthDiagnostic(uri)
+	}
+
 	s.scheduleAnalyze(uri)
 	return nil
 }

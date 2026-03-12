@@ -170,6 +170,42 @@ func tagViolationToDiagnostics(v scanner.TagViolation) []lsp.Diagnostic {
 	return diags
 }
 
+// publishAuthDiagnostic sends a single info diagnostic to the given file
+// indicating that the user needs to authenticate.
+func (s *Server) publishAuthDiagnostic(uri string) {
+	if s.client == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s.mu.Lock()
+	if s.filesWithDiagnostics == nil {
+		s.filesWithDiagnostics = make(map[string]struct{})
+	}
+	s.filesWithDiagnostics[uri] = struct{}{}
+	s.mu.Unlock()
+
+	severity := lsp.SeverityInformation
+	if err := s.client.PublishDiagnostics(ctx, &lsp.PublishDiagnosticsParams{
+		URI: lsp.DocumentURI(uri),
+		Diagnostics: []lsp.Diagnostic{
+			{
+				Range: lsp.Range{
+					Start: lsp.Position{Line: 0, Character: 0},
+					End:   lsp.Position{Line: 0, Character: 0},
+				},
+				Severity: &severity,
+				Source:   "infracost",
+				Message:  "Infracost: not authenticated. Run `infracost login` to enable cost analysis and FinOps policies.",
+			},
+		},
+	}); err != nil {
+		slog.Warn("publishAuthDiagnostic: failed", "uri", uri, "error", err)
+	}
+}
+
 // isLocalFile returns true if the path exists on disk as a regular file.
 // This filters out violations from remote modules (e.g. github.com/...) whose
 // filenames resolve to non-existent paths.
