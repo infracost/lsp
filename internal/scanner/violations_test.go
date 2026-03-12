@@ -246,6 +246,24 @@ func TestBuildViolationMarkdown(t *testing.T) {
 			},
 			excludes: []string{"Downgrade"},
 		},
+		{
+			name: "HTML in policy detail converted to markdown",
+			v: FinopsViolation{
+				PolicyName: "GP3 migration",
+				PolicySlug: "gp3-migration",
+				Address:    "aws_ebs_volume.data",
+				Message:    `Migrate to <a href="https://docs.aws.amazon.com/ebs/latest/userguide/gp3.html">gp3</a>`,
+				PolicyDetail: &dashboard.PolicyDetail{
+					ShortTitle:        "Migrate EBS to GP3",
+					AdditionalDetails: `See <a href="https://infracost.io/docs">docs</a> for more info.<br>Contact support if needed.`,
+				},
+			},
+			contains: []string{
+				"[gp3](https://docs.aws.amazon.com/ebs/latest/userguide/gp3.html)",
+				"[docs](https://infracost.io/docs) for more info.",
+			},
+			excludes: []string{"<a ", "</a>", "<br>"},
+		},
 	}
 
 	for _, tt := range tests {
