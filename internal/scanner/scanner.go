@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -851,30 +852,30 @@ func buildViolationMarkdown(v FinopsViolation) string {
 	}
 	fmt.Fprintf(&b, "**Severity:** %s\n\n", severity)
 
-	fmt.Fprintf(&b, "%s\n\n", v.Message)
+	fmt.Fprintf(&b, "%s\n\n", htmlToMarkdown(v.Message))
 
 	if v.MonthlySavings != nil && !v.MonthlySavings.IsZero() {
 		fmt.Fprintf(&b, "**Potential Savings:** %s/mo\n\n", FormatCost(v.MonthlySavings))
 		if v.SavingsDetails != "" {
-			fmt.Fprintf(&b, "%s\n\n", v.SavingsDetails)
+			fmt.Fprintf(&b, "%s\n\n", htmlToMarkdown(v.SavingsDetails))
 		}
 	}
 
 	if pd := v.PolicyDetail; pd != nil {
 		if pd.ShortTitle != "" {
-			fmt.Fprintf(&b, "**%s**\n\n", pd.ShortTitle)
+			fmt.Fprintf(&b, "**%s**\n\n", htmlToMarkdown(pd.ShortTitle))
 		}
 		if pd.RiskDescription != "" {
-			fmt.Fprintf(&b, "**Risk** (%s): %s\n\n", pd.Risk, pd.RiskDescription)
+			fmt.Fprintf(&b, "**Risk** (%s): %s\n\n", pd.Risk, htmlToMarkdown(pd.RiskDescription))
 		}
 		if pd.EffortDescription != "" {
-			fmt.Fprintf(&b, "**Effort** (%s): %s\n\n", pd.Effort, pd.EffortDescription)
+			fmt.Fprintf(&b, "**Effort** (%s): %s\n\n", pd.Effort, htmlToMarkdown(pd.EffortDescription))
 		}
 		if pd.DowntimeDescription != "" {
-			fmt.Fprintf(&b, "**Downtime** (%s): %s\n\n", pd.Downtime, pd.DowntimeDescription)
+			fmt.Fprintf(&b, "**Downtime** (%s): %s\n\n", pd.Downtime, htmlToMarkdown(pd.DowntimeDescription))
 		}
 		if pd.AdditionalDetails != "" {
-			fmt.Fprintf(&b, "%s\n\n", pd.AdditionalDetails)
+			fmt.Fprintf(&b, "%s\n\n", htmlToMarkdown(pd.AdditionalDetails))
 		}
 	}
 
@@ -924,6 +925,19 @@ func envToMap() map[string]string {
 		}
 	}
 	return env
+}
+
+var (
+	reAnchor  = regexp.MustCompile(`<a\s+[^>]*href=["']([^"']*)["'][^>]*>(.*?)</a>`)
+	reHTMLTag = regexp.MustCompile(`<[^>]+>`)
+)
+
+// htmlToMarkdown converts HTML anchor tags to markdown links and strips
+// remaining HTML tags so the output renders cleanly in editors that only
+// support markdown (e.g. Zed, Neovim).
+func htmlToMarkdown(s string) string {
+	s = reAnchor.ReplaceAllString(s, "[$2]($1)")
+	return reHTMLTag.ReplaceAllString(s, "")
 }
 
 // FormatCost formats a rat.Rat as a dollar string like "$1.23".

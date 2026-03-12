@@ -3,6 +3,9 @@ package scanner
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	goprotoevent "github.com/infracost/go-proto/pkg/event"
 	"github.com/infracost/proto/gen/go/infracost/provider"
 )
@@ -153,51 +156,20 @@ func TestConvertTagViolations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := convertTagViolations(tt.results, resources, "/project", srcLocs)
 
-			if len(got) != len(tt.want) {
-				t.Fatalf("got %d violations, want %d", len(got), len(tt.want))
-			}
+			require.Len(t, got, len(tt.want))
 
 			for i, g := range got {
 				w := tt.want[i]
-				if g.PolicyName != w.PolicyName {
-					t.Errorf("[%d] PolicyName = %q, want %q", i, g.PolicyName, w.PolicyName)
-				}
-				if g.BlockPR != w.BlockPR {
-					t.Errorf("[%d] BlockPR = %v, want %v", i, g.BlockPR, w.BlockPR)
-				}
-				if g.Address != w.Address {
-					t.Errorf("[%d] Address = %q, want %q", i, g.Address, w.Address)
-				}
-				if g.ResourceType != w.ResourceType {
-					t.Errorf("[%d] ResourceType = %q, want %q", i, g.ResourceType, w.ResourceType)
-				}
-				if g.Filename != w.Filename {
-					t.Errorf("[%d] Filename = %q, want %q", i, g.Filename, w.Filename)
-				}
-				if g.StartLine != w.StartLine {
-					t.Errorf("[%d] StartLine = %d, want %d", i, g.StartLine, w.StartLine)
-				}
-				if g.EndLine != w.EndLine {
-					t.Errorf("[%d] EndLine = %d, want %d", i, g.EndLine, w.EndLine)
-				}
-				if g.Message != w.Message {
-					t.Errorf("[%d] Message = %q, want %q", i, g.Message, w.Message)
-				}
-				if len(g.MissingTags) != len(w.MissingTags) {
-					t.Errorf("[%d] MissingTags len = %d, want %d", i, len(g.MissingTags), len(w.MissingTags))
-				}
-				if len(g.InvalidTags) != len(w.InvalidTags) {
-					t.Errorf("[%d] InvalidTags len = %d, want %d", i, len(g.InvalidTags), len(w.InvalidTags))
-				}
-				for j, it := range g.InvalidTags {
-					if j >= len(w.InvalidTags) {
-						break
-					}
-					wit := w.InvalidTags[j]
-					if it.Key != wit.Key || it.Value != wit.Value || it.Suggestion != wit.Suggestion || it.Message != wit.Message {
-						t.Errorf("[%d] InvalidTag[%d] = %+v, want %+v", i, j, it, wit)
-					}
-				}
+				assert.Equal(t, w.PolicyName, g.PolicyName, "[%d] PolicyName", i)
+				assert.Equal(t, w.BlockPR, g.BlockPR, "[%d] BlockPR", i)
+				assert.Equal(t, w.Address, g.Address, "[%d] Address", i)
+				assert.Equal(t, w.ResourceType, g.ResourceType, "[%d] ResourceType", i)
+				assert.Equal(t, w.Filename, g.Filename, "[%d] Filename", i)
+				assert.Equal(t, w.StartLine, g.StartLine, "[%d] StartLine", i)
+				assert.Equal(t, w.EndLine, g.EndLine, "[%d] EndLine", i)
+				assert.Equal(t, w.Message, g.Message, "[%d] Message", i)
+				assert.Equal(t, w.MissingTags, g.MissingTags, "[%d] MissingTags", i)
+				assert.Equal(t, w.InvalidTags, g.InvalidTags, "[%d] InvalidTags", i)
 			}
 		})
 	}

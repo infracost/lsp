@@ -1,3 +1,5 @@
+github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
+github.com/Masterminds/semver/v3 v3.4.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/MicahParks/jwkset v0.11.0 h1:yc0zG+jCvZpWgFDFmvs8/8jqqVBG9oyIbmBtmjOhoyQ=
 github.com/MicahParks/jwkset v0.11.0/go.mod h1:U2oRhRaLgDCLjtpGL2GseNKGmZtLs/3O7p+OZaL5vo0=
 github.com/MicahParks/keyfunc/v3 v3.7.0 h1:pdafUNyq+p3ZlvjJX1HWFP7MA3+cLpDtg69U3kITJGM=
@@ -54,12 +56,12 @@ github.com/hashicorp/hcl/v2 v2.24.0 h1:2QJdZ454DSsYGoaE6QheQZjtKZSUs9Nh2izTWiwQx
 github.com/hashicorp/hcl/v2 v2.24.0/go.mod h1:oGoO1FIQYfn/AgyOhlg9qLC6/nOJPX3qGbkZpYAcqfM=
 github.com/hashicorp/yamux v0.1.2 h1:XtB8kyFOyHXYVFnwT5C3+Bdo8gArse7j2AQ0DA0Uey8=
 github.com/hashicorp/yamux v0.1.2/go.mod h1:C+zze2n6e/7wshOZep2A70/aQU6QBRWJO/G6FT1wIns=
-github.com/infracost/cli v0.0.5 h1:plJrLXJEEGKTfYGIQcvV3tLkkKEPY8tv4w5Rr1YEK9w=
-github.com/infracost/cli v0.0.5/go.mod h1:zeBXu4NybpOy0KqL4RWib+eXSUMX1oKrWvj60IWsi4Y=
+github.com/infracost/cli v0.0.6 h1:o0MMz3sgGCT7kvl+Ms+NneiQ615XNOmbiJFrjv2zyiI=
+github.com/infracost/cli v0.0.6/go.mod h1:zeBXu4NybpOy0KqL4RWib+eXSUMX1oKrWvj60IWsi4Y=
 github.com/infracost/config v0.3.15 h1:e08GIGvKFgjh+lzMAgnpNIScPhuLAZEHsS9JnJsPQaA=
 github.com/infracost/config v0.3.15/go.mod h1:8tXgHnaQvE9hhwdjaa3sRF3K4hmIaIcPNF/iaouHjqc=
-github.com/infracost/go-proto v0.2.1 h1:NrM4z6D6rmkMkhaU7JqblG3imCmKenlB6YW9gmhNc10=
-github.com/infracost/go-proto v0.2.1/go.mod h1:C8q18V30lfDaVgRKoGeo3NN+CridCKkzbEjxCovQcfk=
+github.com/infracost/go-proto v0.2.2 h1:shX1EIm4K1mFThSNXKg2/ktluZgqt0bbZ91mBNazS8s=
+github.com/infracost/go-proto v0.2.2/go.mod h1:C8q18V30lfDaVgRKoGeo3NN+CridCKkzbEjxCovQcfk=
 github.com/infracost/proto v1.21.0 h1:P7CQQp9CSK8Yt+V2imtOzuopGjBFJleij6EK25Owpd8=
 github.com/infracost/proto v1.21.0/go.mod h1:BO6ew0skDYqM8lxl3rKKMA7WRM7VG1dIUKErbTdfGPk=
 github.com/jhump/protoreflect v1.17.0 h1:qOEr613fac2lOuTgWN4tPAtLL7fUSbuJL5X5XumQh94=

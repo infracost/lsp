@@ -5,6 +5,8 @@ import (
 
 	"github.com/infracost/go-proto/pkg/rat"
 	"github.com/owenrumney/go-lsp/lsp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/lsp/internal/scanner"
 )
@@ -78,29 +80,14 @@ func TestFinopsViolationToDiagnostic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			diags := finopsViolationToDiagnostic(tt.violation)
 
-			if len(diags) != 1 {
-				t.Fatalf("got %d diagnostics, want 1", len(diags))
-			}
+			require.Len(t, diags, 1)
 			d := diags[0]
 
-			if d.Severity == nil {
-				t.Fatal("severity is nil")
-			}
-			if *d.Severity != tt.wantSev {
-				t.Errorf("severity = %d, want %d", *d.Severity, tt.wantSev)
-			}
-
-			if d.Message != tt.wantMsg {
-				t.Errorf("message = %q, want %q", d.Message, tt.wantMsg)
-			}
-
-			if d.Source != "infracost" {
-				t.Errorf("source = %q, want %q", d.Source, "infracost")
-			}
-
-			if d.Range.Start.Line != tt.wantLine {
-				t.Errorf("start line = %d, want %d", d.Range.Start.Line, tt.wantLine)
-			}
+			require.NotNil(t, d.Severity)
+			assert.Equal(t, tt.wantSev, *d.Severity, "severity")
+			assert.Equal(t, tt.wantMsg, d.Message, "message")
+			assert.Equal(t, "infracost", d.Source, "source")
+			assert.Equal(t, tt.wantLine, d.Range.Start.Line, "start line")
 		})
 	}
 }
@@ -164,29 +151,14 @@ func TestTagViolationToDiagnostics(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			diags := tagViolationToDiagnostics(tt.violation)
 
-			if len(diags) != len(tt.wantMsgs) {
-				t.Fatalf("got %d diagnostics, want %d", len(diags), len(tt.wantMsgs))
-			}
+			require.Len(t, diags, len(tt.wantMsgs))
 
 			for i, d := range diags {
-				if d.Severity == nil {
-					t.Fatalf("diag[%d]: severity is nil", i)
-				}
-				if *d.Severity != tt.wantSev {
-					t.Errorf("diag[%d]: severity = %d, want %d", i, *d.Severity, tt.wantSev)
-				}
-
-				if d.Message != tt.wantMsgs[i] {
-					t.Errorf("diag[%d]: message = %q, want %q", i, d.Message, tt.wantMsgs[i])
-				}
-
-				if d.Source != "infracost" {
-					t.Errorf("diag[%d]: source = %q, want %q", i, d.Source, "infracost")
-				}
-
-				if d.Range.Start.Line != tt.wantLine {
-					t.Errorf("diag[%d]: start line = %d, want %d", i, d.Range.Start.Line, tt.wantLine)
-				}
+				require.NotNil(t, d.Severity, "diag[%d]", i)
+				assert.Equal(t, tt.wantSev, *d.Severity, "diag[%d]: severity", i)
+				assert.Equal(t, tt.wantMsgs[i], d.Message, "diag[%d]: message", i)
+				assert.Equal(t, "infracost", d.Source, "diag[%d]: source", i)
+				assert.Equal(t, tt.wantLine, d.Range.Start.Line, "diag[%d]: start line", i)
 			}
 		})
 	}
