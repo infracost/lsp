@@ -6,6 +6,7 @@ import (
 	"time"
 
 	repoconfig "github.com/infracost/config"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestScheduleAnalyzeDebounce(t *testing.T) {
@@ -49,9 +50,7 @@ func TestScheduleAnalyzeDebounce(t *testing.T) {
 	// Wait for debounce to fire (last save + debounce window + margin).
 	time.Sleep(scanDebounce + 100*time.Millisecond)
 
-	if got := scanCount.Load(); got != 1 {
-		t.Errorf("expected 1 scan, got %d", got)
-	}
+	assert.Equal(t, int32(1), scanCount.Load())
 }
 
 func TestScheduleAnalyzeCoalescesRapidSaves(t *testing.T) {
@@ -74,9 +73,7 @@ func TestScheduleAnalyzeCoalescesRapidSaves(t *testing.T) {
 	timerCount := len(srv.scanTimers)
 	srv.mu.RUnlock()
 
-	if timerCount != 1 {
-		t.Errorf("expected 1 pending timer, got %d", timerCount)
-	}
+	assert.Equal(t, 1, timerCount)
 
 	// Clean up: stop timers so the callback doesn't fire and panic.
 	srv.mu.Lock()
@@ -123,6 +120,6 @@ func TestScheduleAnalyzeCancelsInFlight(t *testing.T) {
 	case <-cancelled:
 		// The old in-flight scan was cancelled.
 	case <-time.After(time.Second):
-		t.Error("expected in-flight scan to be cancelled")
+		assert.Fail(t, "expected in-flight scan to be cancelled")
 	}
 }

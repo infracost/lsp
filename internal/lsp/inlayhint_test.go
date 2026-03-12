@@ -7,15 +7,15 @@ import (
 	"testing"
 
 	"github.com/owenrumney/go-lsp/lsp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/lsp/internal/scanner"
 )
 
 func TestInlayHint(t *testing.T) {
 	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	testFile := filepath.Join(cwd, "testdata", "main.tf")
 	testURI := "file://" + testFile
 
@@ -169,13 +169,8 @@ func TestInlayHint(t *testing.T) {
 					End:   lsp.Position{Line: 100, Character: 0},
 				},
 			})
-			if err != nil {
-				t.Fatalf("InlayHint returned error: %v", err)
-			}
-
-			if len(hints) != tt.wantCount {
-				t.Fatalf("got %d hints, want %d", len(hints), tt.wantCount)
-			}
+			require.NoError(t, err)
+			require.Len(t, hints, tt.wantCount)
 
 			for i, wantLabel := range tt.wantLabels {
 				if i >= len(hints) {
@@ -184,19 +179,15 @@ func TestInlayHint(t *testing.T) {
 				gotLabel := string(hints[i].Label)
 				// Label is JSON-encoded string, so it includes quotes.
 				wantJSON := string(marshalLabel(wantLabel))
-				if gotLabel != wantJSON {
-					t.Errorf("hint[%d] label = %s, want %s", i, gotLabel, wantJSON)
-				}
+				assert.Equal(t, wantJSON, gotLabel, "hint[%d] label", i)
 			}
 
 			// All hints should have paddingLeft=true and position at character 999.
 			for i, h := range hints {
-				if h.PaddingLeft == nil || !*h.PaddingLeft {
-					t.Errorf("hint[%d] paddingLeft should be true", i)
+				if assert.NotNil(t, h.PaddingLeft, "hint[%d] paddingLeft", i) {
+					assert.True(t, *h.PaddingLeft, "hint[%d] paddingLeft should be true", i)
 				}
-				if h.Position.Character != 999 {
-					t.Errorf("hint[%d] character = %d, want 999", i, h.Position.Character)
-				}
+				assert.Equal(t, 999, h.Position.Character, "hint[%d] character", i)
 			}
 		})
 	}

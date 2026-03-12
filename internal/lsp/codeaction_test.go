@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/owenrumney/go-lsp/lsp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/lsp/internal/scanner"
 )
@@ -73,24 +75,14 @@ func TestParseAttributeFix(t *testing.T) {
 			fix := parseAttributeFix(tt.description)
 
 			if tt.wantNil {
-				if fix != nil {
-					t.Fatalf("expected nil, got %+v", fix)
-				}
+				require.Nil(t, fix)
 				return
 			}
 
-			if fix == nil {
-				t.Fatal("expected non-nil fix")
-			}
-			if fix.Attribute != tt.wantAttr {
-				t.Errorf("attribute = %q, want %q", fix.Attribute, tt.wantAttr)
-			}
-			if fix.OldValue != tt.wantOld {
-				t.Errorf("oldValue = %q, want %q", fix.OldValue, tt.wantOld)
-			}
-			if fix.NewValue != tt.wantNew {
-				t.Errorf("newValue = %q, want %q", fix.NewValue, tt.wantNew)
-			}
+			require.NotNil(t, fix)
+			assert.Equal(t, tt.wantAttr, fix.Attribute, "attribute")
+			assert.Equal(t, tt.wantOld, fix.OldValue, "oldValue")
+			assert.Equal(t, tt.wantNew, fix.NewValue, "newValue")
 		})
 	}
 }
@@ -103,9 +95,7 @@ func TestCodeAction(t *testing.T) {
   instance_type = "t3.medium"
 }
 `
-	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(tfFile, []byte(tfContent), 0644))
 	fileURI := "file://" + tfFile
 
 	s := &Server{
@@ -201,26 +191,15 @@ func TestCodeAction(t *testing.T) {
 			}
 
 			actions, err := s.CodeAction(context.Background(), params)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if len(actions) != tt.wantCount {
-				t.Fatalf("got %d actions, want %d", len(actions), tt.wantCount)
-			}
+			require.NoError(t, err)
+			require.Len(t, actions, tt.wantCount)
 
 			if tt.wantCount > 0 {
-				if actions[0].Title != tt.wantTitle {
-					t.Errorf("title = %q, want %q", actions[0].Title, tt.wantTitle)
-				}
+				assert.Equal(t, tt.wantTitle, actions[0].Title, "title")
 				if tt.wantDisabled {
-					if actions[0].Disabled == nil {
-						t.Error("expected disabled action")
-					}
+					assert.NotNil(t, actions[0].Disabled, "expected disabled action")
 				} else {
-					if actions[0].Edit == nil {
-						t.Error("expected edit on action")
-					}
+					assert.NotNil(t, actions[0].Edit, "expected edit on action")
 				}
 			}
 		})
@@ -235,9 +214,7 @@ func TestBuildAttributeEdit(t *testing.T) {
   instance_type = "t3.medium"
 }
 `
-	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(tfFile, []byte(tfContent), 0644))
 	fileURI := pathToURI(tfFile)
 
 	tests := []struct {
@@ -292,31 +269,19 @@ func TestBuildAttributeEdit(t *testing.T) {
 			edit := buildAttributeEdit(fileURI, tt.fix, &tt.violation)
 
 			if tt.wantNil {
-				if edit != nil {
-					t.Fatal("expected nil edit")
-				}
+				require.Nil(t, edit)
 				return
 			}
 
-			if edit == nil {
-				t.Fatal("expected non-nil edit")
-			}
+			require.NotNil(t, edit)
 
 			edits := edit.Changes[lsp.DocumentURI(fileURI)]
-			if len(edits) != 1 {
-				t.Fatalf("expected 1 edit, got %d", len(edits))
-			}
+			require.Len(t, edits, 1)
 
 			te := edits[0]
-			if te.NewText != tt.wantNewText {
-				t.Errorf("newText = %q, want %q", te.NewText, tt.wantNewText)
-			}
-			if te.Range.Start.Line != tt.wantLine {
-				t.Errorf("line = %d, want %d", te.Range.Start.Line, tt.wantLine)
-			}
-			if te.Range.Start.Character != tt.wantChar {
-				t.Errorf("char = %d, want %d", te.Range.Start.Character, tt.wantChar)
-			}
+			assert.Equal(t, tt.wantNewText, te.NewText, "newText")
+			assert.Equal(t, tt.wantLine, te.Range.Start.Line, "line")
+			assert.Equal(t, tt.wantChar, te.Range.Start.Character, "char")
 		})
 	}
 }
@@ -329,9 +294,7 @@ func TestBuildAttributeEditBooleans(t *testing.T) {
   engine                = "aurora-mysql"
 }
 `
-	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(tfFile, []byte(tfContent), 0644))
 	fileURI := pathToURI(tfFile)
 
 	// Simulates: Set `copy_tags_to_snapshot` = true (no old value from parser)
@@ -339,21 +302,13 @@ func TestBuildAttributeEditBooleans(t *testing.T) {
 	v := &scanner.FinopsViolation{Filename: tfFile, StartLine: 1, EndLine: 4}
 
 	edit := buildAttributeEdit(fileURI, fix, v)
-	if edit == nil {
-		t.Fatal("expected non-nil edit")
-	}
+	require.NotNil(t, edit)
 
 	edits := edit.Changes[lsp.DocumentURI(fileURI)]
-	if len(edits) != 1 {
-		t.Fatalf("expected 1 edit, got %d", len(edits))
-	}
+	require.Len(t, edits, 1)
 
-	if edits[0].NewText != "true" {
-		t.Errorf("newText = %q, want %q", edits[0].NewText, "true")
-	}
-	if edits[0].Range.Start.Line != 1 {
-		t.Errorf("line = %d, want 1", edits[0].Range.Start.Line)
-	}
+	assert.Equal(t, "true", edits[0].NewText, "newText")
+	assert.Equal(t, 1, edits[0].Range.Start.Line, "line")
 }
 
 func TestBuildAttributeEditArrayIndex(t *testing.T) {
@@ -364,9 +319,7 @@ func TestBuildAttributeEditArrayIndex(t *testing.T) {
   min_size       = 1
 }
 `
-	if err := os.WriteFile(tfFile, []byte(tfContent), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(tfFile, []byte(tfContent), 0644))
 	fileURI := pathToURI(tfFile)
 
 	// Simulates: Switch `instance_types[0]` from `t3.large` to `t4g.large`
@@ -374,16 +327,10 @@ func TestBuildAttributeEditArrayIndex(t *testing.T) {
 	v := &scanner.FinopsViolation{Filename: tfFile, StartLine: 1, EndLine: 4}
 
 	edit := buildAttributeEdit(fileURI, fix, v)
-	if edit == nil {
-		t.Fatal("expected non-nil edit")
-	}
+	require.NotNil(t, edit)
 
 	edits := edit.Changes[lsp.DocumentURI(fileURI)]
-	if len(edits) != 1 {
-		t.Fatalf("expected 1 edit, got %d", len(edits))
-	}
+	require.Len(t, edits, 1)
 
-	if edits[0].NewText != "t4g.large" {
-		t.Errorf("newText = %q, want %q", edits[0].NewText, "t4g.large")
-	}
+	assert.Equal(t, "t4g.large", edits[0].NewText, "newText")
 }

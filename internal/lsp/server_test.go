@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestUriToPath(t *testing.T) {
@@ -94,9 +97,7 @@ func TestUriToPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := uriToPath(tt.uri)
-			if got != tt.want {
-				t.Errorf("uriToPath(%q)\n  got  %q\n  want %q", tt.uri, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "uriToPath(%q)", tt.uri)
 		})
 	}
 }
@@ -115,9 +116,7 @@ func TestIsSupportedFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSupportedFile(tt.uri); got != tt.want {
-				t.Errorf("isSupportedFile(%q) = %v, want %v", tt.uri, got, tt.want)
-			}
+			assert.Equal(t, tt.want, isSupportedFile(tt.uri), "isSupportedFile(%q)", tt.uri)
 		})
 	}
 }
@@ -170,14 +169,11 @@ func TestIsSupportedFile_CloudFormation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := filepath.Join(t.TempDir(), "template"+tt.ext)
-			if err := os.WriteFile(f, []byte(tt.content), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			err := os.WriteFile(f, []byte(tt.content), 0o644)
+			require.NoError(t, err)
 
 			uri := "file://" + f
-			if got := isSupportedFile(uri); got != tt.want {
-				t.Errorf("isSupportedFile(%q) = %v, want %v", tt.name, got, tt.want)
-			}
+			assert.Equal(t, tt.want, isSupportedFile(uri), "isSupportedFile(%q)", tt.name)
 		})
 	}
 }

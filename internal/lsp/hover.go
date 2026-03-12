@@ -142,7 +142,7 @@ func buildFullHoverMarkdown(r scanner.ResourceResult, violations []scanner.Finop
 	fmt.Fprintf(&b, "**Monthly Cost:** %s/mo\n\n", scanner.FormatCost(r.MonthlyCost))
 
 	if len(r.CostComponents) > 0 {
-		b.WriteString("<details><summary>Cost Components</summary>\n\n")
+		b.WriteString("**Cost Components**\n\n")
 		b.WriteString("| Component | Qty | Unit | Price | Monthly |\n")
 		b.WriteString("|:---|---:|:---|---:|---:|\n")
 
@@ -161,7 +161,7 @@ func buildFullHoverMarkdown(r scanner.ResourceResult, violations []scanner.Finop
 				scanner.FormatCost(c.TotalMonthlyCost),
 			)
 		}
-		b.WriteString("\n</details>\n\n")
+		b.WriteString("\n")
 	}
 
 	for i, v := range violations {

@@ -8,6 +8,10 @@ help: ## Show this help.
 build: ## Build the LSP binary
 	go build -o bin/infracost-ls .
 
+.PHONY: test
+test: ## Run tests
+	go test -v ./...
+
 .PHONY: lint
 lint: lint_install ## Run linting operations
 	golangci-lint run ./...
