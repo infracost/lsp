@@ -87,10 +87,12 @@ func main() {
 	slog.Info("debug UI config", "INFRACOST_DEBUG_UI", cfg.DebugUI) //nolint:gosec
 	if cfg.DebugUI != "" {
 		// check if the debug UI port is available before starting the server
+		// if its bound, we're going to log it and move on
 		if err := checkPortAvailable(cfg.DebugUI); err != nil {
 			slog.Error("debug UI port is not available", "port", cfg.DebugUI, "error", err)
+		} else {
+			opts = append(opts, server.WithDebugUI(cfg.DebugUI))
 		}
-		opts = append(opts, server.WithDebugUI(cfg.DebugUI))
 	}
 	srv := server.NewServer(lspServer, opts...)
 	lspServer.SetServer(srv)
