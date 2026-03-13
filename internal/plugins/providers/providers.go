@@ -2,6 +2,7 @@ package providers
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/hashicorp/go-hclog"
 	cliprovider "github.com/infracost/cli/pkg/plugins/providers"
@@ -18,10 +19,14 @@ type PluginClient struct {
 	AzureVersion  string
 	GoogleVersion string
 
+	mu      sync.Mutex
 	clients map[proto.Provider]*client.PluginClient[proto.ProviderServiceClient]
 }
 
 func (c *PluginClient) Load(provider proto.Provider, level hclog.Level) (proto.ProviderServiceClient, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.clients == nil {
 		c.clients = make(map[proto.Provider]*client.PluginClient[proto.ProviderServiceClient])
 	}
@@ -43,13 +48,18 @@ func (c *PluginClient) Load(provider proto.Provider, level hclog.Level) (proto.P
 }
 
 func (c *PluginClient) Reconnect(provider proto.Provider, level hclog.Level) (proto.ProviderServiceClient, error) {
+	c.mu.Lock()
 	if pc, ok := c.clients[provider]; ok {
+		c.mu.Unlock()
 		return pc.Reconnect()
 	}
+	c.mu.Unlock()
 	return c.Load(provider, level)
 }
 
 func (c *PluginClient) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, pc := range c.clients {
 		pc.Close()
 	}

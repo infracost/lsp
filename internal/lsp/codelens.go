@@ -23,7 +23,6 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 	}
 
 	reqPath := filepath.Clean(uriToPath(uri))
-	scanning := s.isScanning()
 
 	// Build maps of resource address → violations.
 	violationsByAddr := make(map[string][]scanner.FinopsViolation)
@@ -55,8 +54,6 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 		// Cost lens.
 		var title string
 		switch {
-		case scanning:
-			title = "Calculating..."
 		case !r.IsSupported:
 			title = "Not supported"
 		default:
@@ -102,12 +99,7 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 			End:   lsp.Position{Line: line, Character: 0},
 		}
 
-		var title string
-		if scanning {
-			title = "Calculating..."
-		} else {
-			title = fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCost(mc.MonthlyCost), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
-		}
+		title := fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCost(mc.MonthlyCost), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
 		lenses = append(lenses, lsp.CodeLens{
 			Range:   rng,
 			Command: revealResourceCommand(title, uri, line),

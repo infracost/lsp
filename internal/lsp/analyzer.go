@@ -34,6 +34,14 @@ func (s *Server) scheduleAnalyze(uri string) {
 
 	projectName := project.Name
 
+	// Don't queue a scan if the project is already being scanned (e.g., during
+	// initial loadConfigAndScan). Concurrent scans of the same project cause
+	// provider plugin conflicts and timeouts.
+	if s.isScanningProject(projectName) {
+		slog.Debug("scheduleAnalyze: project already scanning, skipping", "project", projectName, "uri", uri)
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -139,6 +147,7 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 	s.refreshCodeLenses()
 	s.refreshInlayHints()
 	s.publishDiagnostics()
+	s.sendScanComplete()
 
 	progress.End(ctx, fmt.Sprintf("%d resources, %d violations", len(result.Resources), len(result.Violations)))
 }
