@@ -9,13 +9,96 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUriToPath(t *testing.T) {
+func TestUriToPath_Windows(t *testing.T) {
+	orig := isWindows
+	isWindows = true
+	t.Cleanup(func() { isWindows = orig })
+
 	tests := []struct {
 		name string
 		uri  string
 		want string
 	}{
-		// Standard file:// URIs — Unix paths
+		// file:// URIs with drive letters
+		{
+			name: "drive letter lowercase",
+			uri:  "file:///c:/Users/owen/project/main.tf",
+			want: `C:\Users\owen\project\main.tf`,
+		},
+		{
+			name: "drive letter uppercase",
+			uri:  "file:///C:/Users/owen/project/main.tf",
+			want: `C:\Users\owen\project\main.tf`,
+		},
+		{
+			name: "drive letter with percent-encoded colon",
+			uri:  "file:///c%3A/Users/owen/project/main.tf",
+			want: `C:\Users\owen\project\main.tf`,
+		},
+		{
+			name: "drive letter uppercase with percent-encoded colon",
+			uri:  "file:///C%3A/Users/owen/project/main.tf",
+			want: `C:\Users\owen\project\main.tf`,
+		},
+		{
+			name: "path with spaces (percent-encoded)",
+			uri:  "file:///c%3A/Users/owen/example%20terraform/main.tf",
+			want: `C:\Users\owen\example terraform\main.tf`,
+		},
+		{
+			name: "path with spaces in drive-letter URI",
+			uri:  "file:///c:/Users/owen/example terraform/main.tf",
+			want: `C:\Users\owen\example terraform\main.tf`,
+		},
+
+		// POSIX-style Windows paths without file:// prefix
+		{
+			name: "posix-style path without file scheme",
+			uri:  "/c:/Users/owen/project",
+			want: `c:\Users\owen\project`,
+		},
+		{
+			name: "posix-style path uppercase drive",
+			uri:  "/C:/Users/owen/project",
+			want: `C:\Users\owen\project`,
+		},
+
+		// Passthrough cases that should still work on Windows
+		{
+			name: "empty string",
+			uri:  "",
+			want: "",
+		},
+		{
+			name: "relative path passthrough",
+			uri:  "project/main.tf",
+			want: "project/main.tf",
+		},
+		{
+			name: "non-file scheme passthrough",
+			uri:  "untitled:///untitled-1",
+			want: "untitled:///untitled-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uriToPath(tt.uri)
+			assert.Equal(t, tt.want, got, "uriToPath(%q)", tt.uri)
+		})
+	}
+}
+
+func TestUriToPath_Unix(t *testing.T) {
+	orig := isWindows
+	isWindows = false
+	t.Cleanup(func() { isWindows = orig })
+
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
 		{
 			name: "unix absolute path",
 			uri:  "file:///home/user/project/main.tf",
@@ -26,52 +109,16 @@ func TestUriToPath(t *testing.T) {
 			uri:  "file:///home/user/my%20project/main.tf",
 			want: "/home/user/my project/main.tf",
 		},
-
-		// Windows file:// URIs — drive letter handling
 		{
-			name: "windows drive letter lowercase",
+			name: "drive-letter URI left intact on unix",
 			uri:  "file:///c:/Users/owen/project/main.tf",
-			want: "c:/Users/owen/project/main.tf",
+			want: "/c:/Users/owen/project/main.tf",
 		},
 		{
-			name: "windows drive letter uppercase",
-			uri:  "file:///C:/Users/owen/project/main.tf",
-			want: "C:/Users/owen/project/main.tf",
-		},
-		{
-			name: "windows drive letter with percent-encoded colon",
-			uri:  "file:///c%3A/Users/owen/project/main.tf",
-			want: "c:/Users/owen/project/main.tf",
-		},
-		{
-			name: "windows drive letter uppercase with percent-encoded colon",
-			uri:  "file:///C%3A/Users/owen/project/main.tf",
-			want: "C:/Users/owen/project/main.tf",
-		},
-		{
-			name: "windows path with spaces (percent-encoded)",
-			uri:  "file:///c%3A/Users/owen/example%20terraform/main.tf",
-			want: "c:/Users/owen/example terraform/main.tf",
-		},
-		{
-			name: "windows path with spaces in drive-letter URI",
-			uri:  "file:///c:/Users/owen/example terraform/main.tf",
-			want: "c:/Users/owen/example terraform/main.tf",
-		},
-
-		// Non-file:// inputs — POSIX-style Windows paths without scheme
-		{
-			name: "posix-style windows path without file scheme",
+			name: "posix-style drive path left intact on unix",
 			uri:  "/c:/Users/owen/project",
-			want: "c:/Users/owen/project",
+			want: "/c:/Users/owen/project",
 		},
-		{
-			name: "posix-style windows path uppercase drive",
-			uri:  "/C:/Users/owen/project",
-			want: "C:/Users/owen/project",
-		},
-
-		// Non-file:// inputs — plain paths passed through unchanged
 		{
 			name: "plain unix path passthrough",
 			uri:  "/home/user/project",

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"slices"
 
@@ -85,6 +86,10 @@ func main() {
 	var opts []server.Option
 	slog.Info("debug UI config", "INFRACOST_DEBUG_UI", cfg.DebugUI) //nolint:gosec
 	if cfg.DebugUI != "" {
+		// check if the debug UI port is available before starting the server
+		if err := checkPortAvailable(cfg.DebugUI); err != nil {
+			slog.Error("debug UI port is not available", "port", cfg.DebugUI, "error", err)
+		}
 		opts = append(opts, server.WithDebugUI(cfg.DebugUI))
 	}
 	srv := server.NewServer(lspServer, opts...)
@@ -98,4 +103,13 @@ func main() {
 		log.Fatalf("server error: %v", err)
 	}
 	slog.Info("server stopped")
+}
+
+func checkPortAvailable(hostPort string) error {
+	ln, err := net.Listen("tcp", hostPort)
+	if err != nil {
+		return err
+	}
+	_ = ln.Close()
+	return nil
 }

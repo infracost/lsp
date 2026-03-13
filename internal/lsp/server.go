@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,11 @@ type Settings struct {
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
+
+// isWindows controls whether uriToPath applies Windows-specific path
+// transforms (drive-letter stripping, separator conversion). It is a var
+// so tests can override it to exercise Windows codepaths on any OS.
+var isWindows = runtime.GOOS == "windows"
 
 type Server struct {
 	scanner *scanner.Scanner
@@ -350,6 +356,7 @@ func (s *Server) loadConfigAndScan() {
 		s.refreshCodeLenses()
 		s.refreshInlayHints()
 		s.publishDiagnostics()
+		s.sendScanComplete()
 	}
 
 	progress.End(ctx, fmt.Sprintf("Scan complete — %d resources, %d violations, %d tag issues", totalResources, totalViolations, totalTagViolations))
@@ -372,6 +379,21 @@ func (s *Server) refreshInlayHints() {
 			return
 		}
 		slog.Debug("refreshInlayHints: client acknowledged")
+	}()
+}
+
+// sendScanComplete sends an infracost/scanComplete notification to the client.
+// The client uses this to trigger UI refresh (code vision, sidebar) without polling.
+func (s *Server) sendScanComplete() {
+	if s.client == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.client.Notify(ctx, "infracost/scanComplete", nil); err != nil {
+			slog.Warn("sendScanComplete: failed", "error", err)
+		}
 	}()
 }
 
@@ -435,6 +457,13 @@ func (s *Server) isScanning() bool {
 	return len(s.scanningProjects) > 0
 }
 
+func (s *Server) isScanningProject(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.scanningProjects[name]
+	return ok
+}
+
 // resetState cancels all in-flight scans, stops debounce timers, and clears
 // cached results. Used when the workspace root changes.
 func (s *Server) resetState() {
@@ -490,17 +519,29 @@ func uriToPath(uri string) string {
 		u, err := url.Parse(uri)
 		if err == nil {
 			path := u.Path
-			// On Windows, url.Parse returns "/c:/path" for "file:///c:/path"
-			// We need to remove the leading slash for Windows drive letters
-			if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
-				path = path[1:]
+			if isWindows {
+				// On Windows, url.Parse returns "/c:/path" for "file:///c:/path"
+				// We need to remove the leading slash for Windows drive letters.
+				if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+					path = path[1:]
+				}
+				// Normalize drive letter to uppercase to match filepath.Abs output.
+				// VSCode sometimes sends lowercase drive letters (e.g. c%3A → c:).
+				if len(path) >= 2 && path[1] == ':' {
+					path = strings.ToUpper(path[:1]) + path[1:]
+				}
+				// Convert forward slashes to backslashes on Windows so path
+				// comparisons using filepath.Join/filepath.Clean work correctly.
+				if len(path) >= 2 && path[1] == ':' {
+					path = strings.ReplaceAll(path, "/", "\\")
+				}
 			}
 			return path
 		}
 	}
 	// Handle POSIX-style Windows paths sent without a file:// prefix, e.g. "/c:/Users/..."
-	if len(uri) >= 3 && uri[0] == '/' && uri[2] == ':' {
-		return uri[1:]
+	if isWindows && len(uri) >= 3 && uri[0] == '/' && uri[2] == ':' {
+		return strings.ReplaceAll(uri[1:], "/", "\\")
 	}
 	return uri
 }
@@ -517,7 +558,8 @@ func pathToURI(path string) string {
 	if len(abs) >= 2 && abs[1] == ':' {
 		abs = "/" + abs
 	}
-	return fmt.Sprintf("file://%s", abs)
+	u := &url.URL{Scheme: "file", Path: abs}
+	return u.String()
 }
 
 func isSupportedFile(uri string) bool {
