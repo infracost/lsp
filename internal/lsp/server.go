@@ -19,6 +19,7 @@ import (
 
 	repoconfig "github.com/infracost/config"
 
+	"github.com/infracost/lsp/internal/events"
 	"github.com/infracost/lsp/internal/ignore"
 	"github.com/infracost/lsp/internal/scanner"
 	"github.com/infracost/lsp/version"
@@ -38,6 +39,7 @@ var isWindows = runtime.GOOS == "windows"
 
 type Server struct {
 	scanner *scanner.Scanner
+	events  events.Client
 	client  *server.Client
 	srv     *server.Server
 	ignores *ignore.Store
@@ -72,7 +74,7 @@ type Server struct {
 	loginCancel     context.CancelFunc
 }
 
-func NewServer(s *scanner.Scanner) *Server {
+func NewServer(s *scanner.Scanner, eventsClient events.Client) *Server {
 	ignores, err := ignore.NewStore()
 	if err != nil {
 		slog.Warn("failed to load ignore store", "error", err)
@@ -80,6 +82,7 @@ func NewServer(s *scanner.Scanner) *Server {
 
 	return &Server{
 		scanner:              s,
+		events:               eventsClient,
 		ignores:              ignores,
 		projectResults:       make(map[string]*scanner.ScanResult),
 		filesWithDiagnostics: make(map[string]struct{}),
@@ -115,6 +118,8 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 		"workspace_root", s.workspaceRoot,
 		"client", params.ClientInfo,
 	)
+
+	s.registerClientMetadata(params)
 
 	if params.Capabilities.TextDocument != nil && params.Capabilities.TextDocument.CodeLens != nil {
 		s.clientSupportsCodeLens = true
@@ -157,6 +162,29 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 			Version: version.Version,
 		},
 	}, nil
+}
+
+// registerClientMetadata updates event metadata with client information from the
+// initialize request. The IDE name and extension version (from initializationOptions)
+// take priority, with "infracost-ls" and the LSP version as fallbacks.
+func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
+	if params.ClientInfo != nil {
+		if params.ClientInfo.Name != "" {
+			events.RegisterMetadata("caller", params.ClientInfo.Name)
+		}
+	}
+
+	var initOpts struct {
+		ExtensionVersion string `json:"extensionVersion"`
+	}
+	if len(params.InitializationOptions) > 0 {
+		if err := json.Unmarshal(params.InitializationOptions, &initOpts); err != nil {
+			slog.Warn("failed to parse initializationOptions", "error", err)
+		}
+	}
+	if initOpts.ExtensionVersion != "" {
+		events.RegisterMetadata("version", initOpts.ExtensionVersion)
+	}
 }
 
 // ExecuteCommand implements server.ExecuteCommandHandler.
@@ -347,6 +375,8 @@ func (s *Server) loadConfigAndScan() {
 			"tag_violations", len(result.TagViolations),
 			"elapsed", elapsed,
 		)
+
+		s.trackRun(ctx, result, elapsed)
 
 		totalResources += len(result.Resources)
 		totalViolations += len(result.Violations)

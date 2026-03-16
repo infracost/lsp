@@ -6,7 +6,9 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
+	"runtime/debug"
 	"slices"
 
 	"github.com/owenrumney/go-lsp/server"
@@ -14,6 +16,7 @@ import (
 	proto "github.com/infracost/proto/gen/go/infracost/provider"
 
 	"github.com/infracost/lsp/internal/config"
+	"github.com/infracost/lsp/internal/events"
 	"github.com/infracost/lsp/internal/lsp"
 	"github.com/infracost/lsp/internal/plugins/parser"
 	"github.com/infracost/lsp/internal/plugins/providers"
@@ -36,6 +39,16 @@ func main() {
 	if err := cfg.Plugins.EnsureParser(); err != nil {
 		log.Fatalf("ensuring parser plugin: %v", err)
 	}
+
+	eventsClient := events.NewClient(http.DefaultClient, cfg.PricingEndpoint)
+
+	defer func() {
+		if r := recover(); r != nil {
+			eventsClient.Push(context.Background(), "infracost-error", "error", r, "stacktrace", string(debug.Stack()))
+			_, _ = fmt.Fprintf(os.Stderr, "panic: %v\n\n%s\n", r, debug.Stack())
+			os.Exit(1)
+		}
+	}()
 
 	parserClient := parser.PluginClient{
 		Plugin:  cfg.Plugins.Parser.Plugin,
@@ -81,7 +94,7 @@ func main() {
 		s.SetTokenSource(cfg.TokenSource)
 	}
 
-	lspServer := lsp.NewServer(s)
+	lspServer := lsp.NewServer(s, eventsClient)
 
 	var opts []server.Option
 	slog.Info("debug UI config", "INFRACOST_DEBUG_UI", cfg.DebugUI) //nolint:gosec
@@ -102,7 +115,8 @@ func main() {
 
 	slog.Info("listening on stdio")
 	if err := srv.Run(context.Background(), server.RunStdio()); err != nil {
-		log.Fatalf("server error: %v", err)
+		log.Printf("server error: %v", err)
+		return
 	}
 	slog.Info("server stopped")
 }
