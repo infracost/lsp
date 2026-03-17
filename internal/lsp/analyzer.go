@@ -130,6 +130,8 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 		"elapsed", elapsed,
 	)
 
+	s.trackRun(ctx, result, elapsed)
+
 	for _, e := range result.Errors {
 		slog.Warn("analyze: scan error", "error", e)
 	}
@@ -217,6 +219,40 @@ func (s *Server) analyzeFullScan(uri string) {
 	}
 
 	progress.End(ctx, fmt.Sprintf("Scan complete — %d resources, %d violations", totalResources, totalViolations))
+}
+
+func (s *Server) trackRun(ctx context.Context, result *scanner.ScanResult, elapsed time.Duration) {
+	if s.events == nil {
+		return
+	}
+
+	var totalResources, totalSupported, totalNoPrice, totalUnsupported int
+	supportedCounts := make(map[string]int)
+	unsupportedCounts := make(map[string]int)
+
+	for _, r := range result.Resources {
+		totalResources++
+		switch {
+		case !r.IsSupported:
+			totalUnsupported++
+			unsupportedCounts[r.Type]++
+		case r.IsFree:
+			totalNoPrice++
+		default:
+			totalSupported++
+			supportedCounts[r.Type]++
+		}
+	}
+
+	go s.events.Push(context.WithoutCancel(ctx), "infracost-run",
+		"runSeconds", elapsed.Seconds(),
+		"totalResources", totalResources,
+		"totalSupportedResources", totalSupported,
+		"totalNoPriceResources", totalNoPrice,
+		"totalUnsupportedResources", totalUnsupported,
+		"supportedResourceCounts", supportedCounts,
+		"unsupportedResourceCounts", unsupportedCounts,
+	)
 }
 
 func safeLineToLSP(line int64) int {
