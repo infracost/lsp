@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	"github.com/owenrumney/go-lsp/server"
+	"golang.org/x/oauth2"
 
 	proto "github.com/infracost/proto/gen/go/infracost/provider"
 
@@ -92,6 +93,7 @@ func main() {
 	s.Init()
 	if cfg.TokenSource != nil {
 		s.SetTokenSource(cfg.TokenSource)
+		eventsClient.SetTokenSource(oauthTokenAdapter{cfg.TokenSource})
 	}
 
 	lspServer := lsp.NewServer(s, eventsClient)
@@ -119,6 +121,18 @@ func main() {
 		return
 	}
 	slog.Info("server stopped")
+}
+
+type oauthTokenAdapter struct {
+	ts oauth2.TokenSource
+}
+
+func (a oauthTokenAdapter) Token() (string, error) {
+	t, err := a.ts.Token()
+	if err != nil {
+		return "", err
+	}
+	return t.AccessToken, nil
 }
 
 func checkPortAvailable(hostPort string) error {

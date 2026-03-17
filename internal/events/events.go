@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"github.com/google/uuid"
 
@@ -18,6 +19,7 @@ import (
 
 type Client interface {
 	Push(ctx context.Context, event string, extra ...interface{})
+	SetTokenSource(ts TokenSource)
 }
 
 func NewClient(httpClient *http.Client, endpoint string) Client {
@@ -29,9 +31,20 @@ func NewClient(httpClient *http.Client, endpoint string) Client {
 }
 
 type client struct {
-	httpClient *http.Client
-	endpoint   string
-	userAgent  string
+	httpClient  *http.Client
+	endpoint    string
+	userAgent   string
+	tokenSource TokenSource
+}
+
+// TokenSource provides an access token for authenticating event requests.
+type TokenSource interface {
+	Token() (string, error)
+}
+
+// SetTokenSource sets the token source used to authenticate event requests.
+func (c *client) SetTokenSource(ts TokenSource) {
+	c.tokenSource = ts
 }
 
 func (c *client) Push(ctx context.Context, event string, extra ...interface{}) {
@@ -39,10 +52,12 @@ func (c *client) Push(ctx context.Context, event string, extra ...interface{}) {
 		panic("events.Push: extra args must be key-value pairs")
 	}
 
+	metadataMu.RLock()
 	env := make(map[string]interface{}, len(metadata)+len(extra)/2)
 	for k, v := range metadata {
 		env[k] = v
 	}
+	metadataMu.RUnlock()
 	for i := 0; i < len(extra); i += 2 {
 		key, ok := extra[i].(string)
 		if !ok {
@@ -72,6 +87,13 @@ func (c *client) Push(ctx context.Context, event string, extra ...interface{}) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
+	if c.tokenSource != nil {
+		if token, err := c.tokenSource.Token(); err == nil {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	slog.Debug("events: sending event", "event", event)
 
 	resp, err := c.httpClient.Do(req) //nolint:gosec // endpoint is from config, not user input
 	if err != nil {
@@ -79,17 +101,23 @@ func (c *client) Push(ctx context.Context, event string, extra ...interface{}) {
 		return
 	}
 	_ = resp.Body.Close()
+
+	slog.Debug("events: event sent", "event", event, "status", resp.StatusCode)
 }
 
-// metadata holds global key-value pairs included with every event.
-var metadata map[string]interface{}
+var (
+	metadata   map[string]interface{}
+	metadataMu sync.RWMutex
+)
 
 func init() {
+	id := loadInstallID()
 	metadata = map[string]interface{}{
 		"caller":      "infracost-ls",
 		"version":     version.Version,
 		"fullVersion": version.Version,
-		"installId":   loadInstallID(),
+		"id":          id,
+		"installId":   id,
 		"os":          runtime.GOOS,
 		"arch":        runtime.GOARCH,
 	}
@@ -97,13 +125,17 @@ func init() {
 
 // RegisterMetadata adds or updates entries in the global event metadata.
 func RegisterMetadata(key string, value interface{}) {
+	metadataMu.Lock()
 	metadata[key] = value
+	metadataMu.Unlock()
 }
 
 // GetMetadata retrieves a typed metadata value. Returns false if the key
 // doesn't exist or the type doesn't match.
 func GetMetadata[V any](key string) (V, bool) {
+	metadataMu.RLock()
 	value, ok := metadata[key]
+	metadataMu.RUnlock()
 	if !ok {
 		var v V
 		return v, false

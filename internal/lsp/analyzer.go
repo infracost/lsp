@@ -244,7 +244,7 @@ func (s *Server) trackRun(ctx context.Context, result *scanner.ScanResult, elaps
 		}
 	}
 
-	go s.events.Push(ctx, "infracost-run",
+	go s.events.Push(context.WithoutCancel(ctx), "infracost-run",
 		"runSeconds", elapsed.Seconds(),
 		"totalResources", totalResources,
 		"totalSupportedResources", totalSupported,

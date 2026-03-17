@@ -176,11 +176,16 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 
 	var initOpts struct {
 		ExtensionVersion string `json:"extensionVersion"`
+		ClientName       string `json:"clientName"`
 	}
 	if len(params.InitializationOptions) > 0 {
+		slog.Debug("initializationOptions", "raw", string(params.InitializationOptions))
 		if err := json.Unmarshal(params.InitializationOptions, &initOpts); err != nil {
 			slog.Warn("failed to parse initializationOptions", "error", err)
 		}
+	}
+	if initOpts.ClientName != "" {
+		events.RegisterMetadata("caller", initOpts.ClientName)
 	}
 	if initOpts.ExtensionVersion != "" {
 		events.RegisterMetadata("version", initOpts.ExtensionVersion)
