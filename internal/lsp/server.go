@@ -121,10 +121,6 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 
 	s.registerClientMetadata(params)
 
-	if params.Capabilities.TextDocument != nil && params.Capabilities.TextDocument.CodeLens != nil {
-		s.clientSupportsCodeLens = true
-	}
-
 	s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
 
 	if s.workspaceRoot != "" {
@@ -177,6 +173,7 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 	var initOpts struct {
 		ExtensionVersion string `json:"extensionVersion"`
 		ClientName       string `json:"clientName"`
+		SupportsCodeLens *bool  `json:"supportsCodeLens"`
 	}
 	if len(params.InitializationOptions) > 0 {
 		slog.Debug("initializationOptions", "raw", string(params.InitializationOptions))
@@ -189,6 +186,12 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 	}
 	if initOpts.ExtensionVersion != "" {
 		events.RegisterMetadata("version", initOpts.ExtensionVersion)
+	}
+
+	// Default to true — clients that don't send this field get code lens
+	// and no inlay hints. Clients that explicitly send false get inlay hints.
+	if initOpts.SupportsCodeLens == nil || *initOpts.SupportsCodeLens {
+		s.clientSupportsCodeLens = true
 	}
 }
 
