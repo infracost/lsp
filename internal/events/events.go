@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/infracost/lsp/internal/trace"
 	"github.com/infracost/lsp/version"
 )
 
@@ -26,7 +27,7 @@ func NewClient(httpClient *http.Client, endpoint string) Client {
 	return &client{
 		httpClient: httpClient,
 		endpoint:   endpoint,
-		userAgent:  fmt.Sprintf("infracost-lsp-%s", version.Version),
+		userAgent:  trace.UserAgent,
 	}
 }
 
