@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/infracost/lsp/internal/trace"
 )
 
 func NewClient(httpClient *http.Client, endpoint string) *Client {
@@ -125,6 +127,7 @@ func (c *Client) organizationScopedClient(organizationID string) *http.Client {
 			base: c.client.Transport,
 			headers: map[string]string{
 				"x-infracost-org-id": organizationID,
+				"User-Agent":         trace.UserAgent,
 			},
 		},
 		CheckRedirect: c.client.CheckRedirect,
