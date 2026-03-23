@@ -123,6 +123,8 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 
 	s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
 
+	go s.checkForUpdate() //nolint:gosec // G118: intentionally outlives request context
+
 	if s.workspaceRoot != "" {
 		go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
 	}

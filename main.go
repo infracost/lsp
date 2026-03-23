@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 
@@ -22,12 +24,41 @@ import (
 	"github.com/infracost/lsp/internal/plugins/parser"
 	"github.com/infracost/lsp/internal/plugins/providers"
 	"github.com/infracost/lsp/internal/scanner"
+	"github.com/infracost/lsp/internal/update"
 	"github.com/infracost/lsp/version"
 )
 
 func main() {
 	if slices.Contains(os.Args[1:], "--version") || slices.Contains(os.Args[1:], "-version") {
 		fmt.Println(version.Version)
+		os.Exit(0)
+	}
+
+	// Interactive commands that exit immediately — these must not
+	// interfere with the stdio-based LSP protocol used by IDEs.
+	wantDebug := slices.Contains(os.Args[1:], "--debug")
+	wantUpdate := slices.Contains(os.Args[1:], "--update")
+
+	if wantDebug || wantUpdate {
+		if wantDebug {
+			runDebug()
+		}
+		if wantUpdate {
+			if !wantDebug {
+				fmt.Printf("Current version: %s\n", version.Version)
+			}
+			fmt.Printf("Updating...\n")
+			result, err := update.Update(context.Background())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+				os.Exit(1)
+			}
+			if !result.UpdateAvailable {
+				fmt.Printf("Already up to date (v%s).\n", result.CurrentVersion)
+			} else {
+				fmt.Printf("Updated %s → v%s.\n", result.CurrentVersion, result.LatestVersion)
+			}
+		}
 		os.Exit(0)
 	}
 
@@ -114,6 +145,7 @@ func main() {
 
 	srv.HandleMethod("infracost/resourceDetails", lspServer.HandleResourceDetails)
 	srv.HandleMethod("infracost/login", lspServer.HandleLogin)
+	srv.HandleMethod("infracost/update", lspServer.HandleUpdate)
 
 	slog.Info("listening on stdio")
 	if err := srv.Run(context.Background(), server.RunStdio()); err != nil {
@@ -142,4 +174,35 @@ func checkPortAvailable(hostPort string) error {
 	}
 	_ = ln.Close()
 	return nil
+}
+
+func runDebug() {
+	fmt.Printf("infracost-ls %s\n", version.Version)
+	fmt.Printf("  go:       %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+
+	execPath, err := os.Executable()
+	if err == nil {
+		execPath, _ = filepath.EvalSymlinks(execPath)
+		fmt.Printf("  bin:      %s\n", execPath)
+	}
+
+	cfg := config.Load(context.Background())
+	fmt.Printf("  auth:     %v\n", cfg.TokenSource != nil)
+
+	fmt.Printf("\nEndpoints:\n")
+	fmt.Printf("  pricing:   %s\n", cfg.PricingEndpoint)
+	fmt.Printf("  dashboard: %s\n", cfg.DashboardEndpoint)
+	fmt.Printf("  plugins:   %s\n", cfg.Plugins.ManifestURL)
+	fmt.Printf("  releases:  https://api.github.com/repos/infracost/lsp/releases/latest\n")
+
+	fmt.Printf("\nChecking for updates...\n")
+	result, err := update.Check(context.Background())
+	switch {
+	case err != nil:
+		fmt.Printf("  update check failed: %v\n", err)
+	case result.UpdateAvailable:
+		fmt.Printf("  update available: v%s → v%s\n", result.CurrentVersion, result.LatestVersion)
+	default:
+		fmt.Printf("  up to date (v%s)\n", result.CurrentVersion)
+	}
 }
