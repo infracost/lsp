@@ -22,6 +22,14 @@ func (s *Server) publishDiagnostics() {
 		return
 	}
 
+	s.mu.RLock()
+	enabled := s.settings.EnableDiagnostics
+	s.mu.RUnlock()
+	if enabled != nil && !*enabled {
+		s.clearAllDiagnostics()
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -203,6 +211,31 @@ func (s *Server) publishAuthDiagnostic(uri string) {
 		},
 	}); err != nil {
 		slog.Warn("publishAuthDiagnostic: failed", "uri", uri, "error", err)
+	}
+}
+
+// clearAllDiagnostics publishes empty diagnostics for every file that
+// currently has diagnostics, effectively removing all squiggly lines.
+func (s *Server) clearAllDiagnostics() {
+	s.mu.Lock()
+	prev := s.filesWithDiagnostics
+	s.filesWithDiagnostics = make(map[string]struct{})
+	s.mu.Unlock()
+
+	if len(prev) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for uri := range prev {
+		if err := s.client.PublishDiagnostics(ctx, &lsp.PublishDiagnosticsParams{
+			URI:         lsp.DocumentURI(uri),
+			Diagnostics: []lsp.Diagnostic{},
+		}); err != nil {
+			slog.Warn("clearAllDiagnostics: failed", "uri", uri, "error", err)
+		}
 	}
 }
 

@@ -27,7 +27,8 @@ import (
 
 // Settings holds client-provided configuration synced via workspace/didChangeConfiguration.
 type Settings struct {
-	RunParamsCacheTTLSeconds int `json:"runParamsCacheTTLSeconds"`
+	RunParamsCacheTTLSeconds int  `json:"runParamsCacheTTLSeconds"`
+	EnableDiagnostics        *bool `json:"enableDiagnostics"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
@@ -277,6 +278,15 @@ func (s *Server) DidChangeConfiguration(_ context.Context, params *lsp.DidChange
 	if err != nil {
 		slog.Warn("didChangeConfiguration: failed to marshal settings", "error", err)
 		return nil
+	}
+
+	// VS Code wraps settings under the configurationSection key, e.g.
+	// {"infracost": {"enableHover": true, ...}}. Unwrap if present.
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapper); err == nil {
+		if inner, ok := wrapper["infracost"]; ok {
+			raw = inner
+		}
 	}
 
 	var settings Settings
