@@ -15,6 +15,13 @@ import (
 
 // Hover implements server.HoverHandler.
 func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, error) {
+	s.mu.RLock()
+	enabled := s.settings.EnableDiagnostics
+	s.mu.RUnlock()
+	if enabled != nil && !*enabled {
+		return nil, nil
+	}
+
 	uri := string(params.TextDocument.URI)
 	slog.Debug("hover: request", "uri", uri, "line", params.Position.Line, "char", params.Position.Character)
 
