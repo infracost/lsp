@@ -6,7 +6,7 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.7.0 // indirect
 	github.com/infracost/config v0.4.2
-	github.com/infracost/go-proto v0.2.2
+	github.com/infracost/go-proto v0.7.0
 	github.com/infracost/proto v1.26.1
 	github.com/owenrumney/go-lsp v0.1.0
 )
