@@ -27,7 +27,7 @@ import (
 
 // Settings holds client-provided configuration synced via workspace/didChangeConfiguration.
 type Settings struct {
-	RunParamsCacheTTLSeconds int  `json:"runParamsCacheTTLSeconds"`
+	RunParamsCacheTTLSeconds int   `json:"runParamsCacheTTLSeconds"`
 	EnableDiagnostics        *bool `json:"enableDiagnostics"`
 }
 
