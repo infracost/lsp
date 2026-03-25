@@ -9,6 +9,7 @@ import (
 
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/infracost/cli/pkg/environment"
+	"github.com/infracost/lsp/internal/config"
 	"github.com/owenrumney/go-lsp/lsp"
 	"golang.org/x/oauth2"
 )
@@ -34,6 +35,7 @@ func (s *Server) HandleLogin(_ context.Context, _ json.RawMessage) (any, error) 
 	cfg := auth.Config{
 		Environment: environment.Production,
 	}
+	cfg.TokenCachePath = config.TokenCachePath()
 	cfg.Process()
 	cfg.UseAccessTokenCache = true
 	resp, err := cfg.StartDeviceFlow(ctx)
@@ -71,6 +73,7 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	cfg := auth.Config{
 		Environment: environment.Production,
 	}
+	cfg.TokenCachePath = config.TokenCachePath()
 	cfg.Process()
 	cfg.UseAccessTokenCache = true
 	tokenSource, err := cfg.PollDeviceFlow(ctx, resp)
