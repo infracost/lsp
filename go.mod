@@ -8,7 +8,7 @@ require (
 	github.com/infracost/config v0.4.2
 	github.com/infracost/go-proto v0.7.0
 	github.com/infracost/proto v1.26.1
-	github.com/owenrumney/go-lsp v0.1.0
+	github.com/owenrumney/go-lsp v0.1.2
 )
 
 require (

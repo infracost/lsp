@@ -98,28 +98,25 @@ func TestCodeAction(t *testing.T) {
 	require.NoError(t, os.WriteFile(tfFile, []byte(tfContent), 0644))
 	fileURI := "file://" + tfFile
 
-	s := &Server{
-		projectResults: map[string]*scanner.ScanResult{
-			"test": {
-				Violations: []scanner.FinopsViolation{
-					{
-						PolicySlug:     "aws-use-graviton-ec2-instance",
-						Message:        "Switch `instance_type` from `t3.medium` to `t4g.medium`",
-						Address:        "aws_instance.web",
-						Filename:       tfFile,
-						StartLine:      1,
-						EndLine:        4,
-						MonthlySavings: mustRat("5.00"),
-					},
-					{
-						PolicySlug: "aws-use-ecr-lifecycle-policy",
-						Message:    "Add a `aws_ecr_lifecycle_policy` resource to define image lifecycle rules",
-						Address:    "aws_instance.web",
-						Filename:   tfFile,
-						StartLine:  1,
-						EndLine:    4,
-					},
-				},
+	s := NewServer(nil, nil)
+	s.projectResults["test"] = &scanner.ScanResult{
+		Violations: []scanner.FinopsViolation{
+			{
+				PolicySlug:     "aws-use-graviton-ec2-instance",
+				Message:        "Switch `instance_type` from `t3.medium` to `t4g.medium`",
+				Address:        "aws_instance.web",
+				Filename:       tfFile,
+				StartLine:      1,
+				EndLine:        4,
+				MonthlySavings: mustRat("5.00"),
+			},
+			{
+				PolicySlug: "aws-use-ecr-lifecycle-policy",
+				Message:    "Add a `aws_ecr_lifecycle_policy` resource to define image lifecycle rules",
+				Address:    "aws_instance.web",
+				Filename:   tfFile,
+				StartLine:  1,
+				EndLine:    4,
 			},
 		},
 	}

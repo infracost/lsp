@@ -106,8 +106,10 @@ func (s *Server) SetServer(srv *server.Server) {
 
 // Initialize implements server.LifecycleHandler.
 func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*lsp.InitializeResult, error) {
-	if h := s.srv.DebugHandler(); h != nil {
-		slog.SetDefault(slog.New(h))
+	if s.srv != nil {
+		if h := s.srv.DebugHandler(); h != nil {
+			slog.SetDefault(slog.New(h))
+		}
 	}
 
 	rootURI := ""
@@ -122,7 +124,9 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 
 	s.registerClientMetadata(params)
 
-	s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
+	if s.scanner != nil {
+		s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
+	}
 
 	go s.checkForUpdate() //nolint:gosec // G118: intentionally outlives request context
 
@@ -247,7 +251,9 @@ func (s *Server) Shutdown(_ context.Context) error {
 	}
 	s.mu.Unlock()
 
-	s.scanner.Close()
+	if s.scanner != nil {
+		s.scanner.Close()
+	}
 	return nil
 }
 

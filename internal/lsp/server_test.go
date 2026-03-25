@@ -5,9 +5,46 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/owenrumney/go-lsp/lsp"
+	"github.com/owenrumney/go-lsp/servertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestInitializeCapabilities(t *testing.T) {
+	h := servertest.New(t, NewServer(nil, nil))
+
+	result := h.InitResult
+	require.NotNil(t, result)
+
+	// Text document sync
+	require.NotNil(t, result.Capabilities.TextDocumentSync)
+	assert.Equal(t, lsp.SyncIncremental, result.Capabilities.TextDocumentSync.Change)
+
+	// Code lens
+	assert.NotNil(t, result.Capabilities.CodeLensProvider)
+
+	// Code action with quick fix
+	require.NotNil(t, result.Capabilities.CodeActionProvider)
+	assert.Contains(t, result.Capabilities.CodeActionProvider.CodeActionKinds, lsp.CodeActionQuickFix)
+
+	// Hover
+	require.NotNil(t, result.Capabilities.HoverProvider)
+	assert.True(t, *result.Capabilities.HoverProvider)
+
+	// Workspace folders
+	require.NotNil(t, result.Capabilities.Workspace)
+	require.NotNil(t, result.Capabilities.Workspace.WorkspaceFolders)
+	assert.True(t, *result.Capabilities.Workspace.WorkspaceFolders.Supported)
+
+	// Execute command
+	require.NotNil(t, result.Capabilities.ExecuteCommandProvider)
+	assert.Contains(t, result.Capabilities.ExecuteCommandProvider.Commands, "infracost.dismissDiagnostic")
+
+	// Server info
+	require.NotNil(t, result.ServerInfo)
+	assert.Equal(t, "infracost-ls", result.ServerInfo.Name)
+}
 
 func TestUriToPath_Windows(t *testing.T) {
 	orig := isWindows

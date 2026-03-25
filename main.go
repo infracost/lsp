@@ -138,6 +138,7 @@ func main() {
 			slog.Error("debug UI port is not available", "port", cfg.DebugUI, "error", err)
 		} else {
 			opts = append(opts, server.WithDebugUI(cfg.DebugUI))
+			opts = append(opts, server.WithLogger(slog.Default()))
 		}
 	}
 	srv := server.NewServer(lspServer, opts...)
