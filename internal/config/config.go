@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/infracost/cli/pkg/auth"
@@ -55,10 +56,27 @@ func Load(ctx context.Context) Config {
 	return cfg
 }
 
+// TokenCachePath returns the path to the LSP's own token cache file,
+// separate from the CLI's token.json to avoid write collisions.
+func TokenCachePath() string {
+	dir, err := os.UserConfigDir()
+	if err == nil {
+		return filepath.Join(dir, "infracost", "lsp-token.json")
+	}
+
+	dir, err = os.UserHomeDir()
+	if err == nil {
+		return filepath.Join(dir, ".infracost", "lsp-token.json")
+	}
+
+	return filepath.Join(".infracost", "lsp-token.json")
+}
+
 func loadAuthToken(ctx context.Context) oauth2.TokenSource {
 	cfg := auth.Config{
 		Environment: environment.Production,
 	}
+	cfg.TokenCachePath = TokenCachePath()
 	cfg.Process()
 	cfg.UseAccessTokenCache = true
 	tokenSource, _, err := cfg.LoadCache(ctx)
