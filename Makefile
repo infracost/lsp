@@ -22,6 +22,7 @@ fmt: ## Format the code
 
 .PHONY: install
 install: build ## Install the LSP binary to the Go bin directory
+	rm ~/go/bin/infracost-ls || true
 	cp bin/infracost-ls ~/go/bin/infracost-ls
 
 .PHONY: clean
