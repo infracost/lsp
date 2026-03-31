@@ -45,8 +45,8 @@ type Scanner struct {
 	Currency          string
 	PricingEndpoint   string
 	DashboardEndpoint string
-	TokenSource *api.TokenSource
-	OnOrgID     func(string)
+	TokenSource       *api.TokenSource
+	OnOrgID           func(string)
 
 	tagPolicies        []*event.TagPolicy
 	runParamsOrgID     string
