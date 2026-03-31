@@ -98,7 +98,7 @@ func TestCodeAction(t *testing.T) {
 	require.NoError(t, os.WriteFile(tfFile, []byte(tfContent), 0644))
 	fileURI := "file://" + tfFile
 
-	s := NewServer(nil, nil)
+	s := NewServer(nil, nil, nil)
 	s.projectResults["test"] = &scanner.ScanResult{
 		Violations: []scanner.FinopsViolation{
 			{

@@ -12,7 +12,7 @@ import (
 func TestScheduleAnalyzeDebounce(t *testing.T) {
 	var scanCount atomic.Int32
 
-	srv := NewServer(nil, nil)
+	srv := NewServer(nil, nil, nil)
 	srv.workspaceRoot = "/tmp/test"
 	srv.setConfig(&repoconfig.Config{
 		Projects: []*repoconfig.Project{
@@ -54,7 +54,7 @@ func TestScheduleAnalyzeDebounce(t *testing.T) {
 }
 
 func TestScheduleAnalyzeCoalescesRapidSaves(t *testing.T) {
-	srv := NewServer(nil, nil)
+	srv := NewServer(nil, nil, nil)
 	srv.workspaceRoot = "/tmp/test"
 	srv.setConfig(&repoconfig.Config{
 		Projects: []*repoconfig.Project{
@@ -85,7 +85,7 @@ func TestScheduleAnalyzeCoalescesRapidSaves(t *testing.T) {
 }
 
 func TestScheduleAnalyzeCancelsInFlight(t *testing.T) {
-	srv := NewServer(nil, nil)
+	srv := NewServer(nil, nil, nil)
 	srv.workspaceRoot = "/tmp/test"
 	srv.setConfig(&repoconfig.Config{
 		Projects: []*repoconfig.Project{

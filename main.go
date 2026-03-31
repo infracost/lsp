@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,10 +13,10 @@ import (
 	"slices"
 
 	"github.com/owenrumney/go-lsp/server"
-	"golang.org/x/oauth2"
 
 	proto "github.com/infracost/proto/gen/go/infracost/provider"
 
+	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/config"
 	"github.com/infracost/lsp/internal/events"
 	"github.com/infracost/lsp/internal/lsp"
@@ -72,7 +71,9 @@ func main() {
 		log.Fatalf("ensuring parser plugin: %v", err)
 	}
 
-	eventsClient := events.NewClient(http.DefaultClient, cfg.PricingEndpoint)
+	tokenSource := api.NewTokenSource(cfg.TokenSource)
+	httpClient, apiTransport := api.NewHTTPClient(tokenSource)
+	eventsClient := events.NewClient(httpClient, cfg.PricingEndpoint)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -111,6 +112,11 @@ func main() {
 		Currency:          cfg.Currency,
 		PricingEndpoint:   cfg.PricingEndpoint,
 		DashboardEndpoint: cfg.DashboardEndpoint,
+		TokenSource:       tokenSource,
+		OnOrgID: func(id string) {
+			apiTransport.SetOrgID(id)
+			events.RegisterMetadata("orgId", id)
+		},
 		EnsureProvider: func(p proto.Provider) error {
 			if err := cfg.Plugins.EnsureProvider(p); err != nil {
 				return err
@@ -122,12 +128,8 @@ func main() {
 		},
 	}
 	s.Init()
-	if cfg.TokenSource != nil {
-		s.SetTokenSource(cfg.TokenSource)
-		eventsClient.SetTokenSource(oauthTokenAdapter{cfg.TokenSource})
-	}
 
-	lspServer := lsp.NewServer(s, eventsClient)
+	lspServer := lsp.NewServer(s, eventsClient, tokenSource)
 
 	var opts []server.Option
 	slog.Info("debug UI config", "INFRACOST_DEBUG_UI", cfg.DebugUI) //nolint:gosec
@@ -154,18 +156,6 @@ func main() {
 		return
 	}
 	slog.Info("server stopped")
-}
-
-type oauthTokenAdapter struct {
-	ts oauth2.TokenSource
-}
-
-func (a oauthTokenAdapter) Token() (string, error) {
-	t, err := a.ts.Token()
-	if err != nil {
-		return "", err
-	}
-	return t.AccessToken, nil
 }
 
 func checkPortAvailable(hostPort string) error {

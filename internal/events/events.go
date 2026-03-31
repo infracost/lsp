@@ -14,38 +14,23 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/infracost/lsp/internal/trace"
 	"github.com/infracost/lsp/version"
 )
 
 type Client interface {
 	Push(ctx context.Context, event string, extra ...interface{})
-	SetTokenSource(ts TokenSource)
 }
 
 func NewClient(httpClient *http.Client, endpoint string) Client {
 	return &client{
 		httpClient: httpClient,
 		endpoint:   endpoint,
-		userAgent:  trace.UserAgent,
 	}
 }
 
 type client struct {
-	httpClient  *http.Client
-	endpoint    string
-	userAgent   string
-	tokenSource TokenSource
-}
-
-// TokenSource provides an access token for authenticating event requests.
-type TokenSource interface {
-	Token() (string, error)
-}
-
-// SetTokenSource sets the token source used to authenticate event requests.
-func (c *client) SetTokenSource(ts TokenSource) {
-	c.tokenSource = ts
+	httpClient *http.Client
+	endpoint   string
 }
 
 func (c *client) Push(ctx context.Context, event string, extra ...interface{}) {
@@ -87,12 +72,6 @@ func (c *client) Push(ctx context.Context, event string, extra ...interface{}) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", c.userAgent)
-	if c.tokenSource != nil {
-		if token, err := c.tokenSource.Token(); err == nil {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-	}
 
 	slog.Debug("events: sending event", "event", event)
 

@@ -6,6 +6,4 @@ import (
 	"github.com/infracost/lsp/version"
 )
 
-var (
-	UserAgent = fmt.Sprintf("infracost-cliv2-%s", version.Version)
-)
+var UserAgent = fmt.Sprintf("infracost-lsp-%s", version.Version)

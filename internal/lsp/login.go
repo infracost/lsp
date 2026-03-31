@@ -84,7 +84,7 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	}
 
 	slog.Info("login: device flow complete")
-	s.scanner.SetTokenSource(tokenSource)
+	s.tokenSource.Set(tokenSource)
 	s.showMessage(ctx, lsp.MessageTypeInfo, "Logged in to Infracost")
 
 	if s.workspaceRoot != "" {

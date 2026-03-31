@@ -12,7 +12,7 @@ import (
 )
 
 func TestInitializeCapabilities(t *testing.T) {
-	h := servertest.New(t, NewServer(nil, nil))
+	h := servertest.New(t, NewServer(nil, nil, nil))
 
 	result := h.InitResult
 	require.NotNil(t, result)

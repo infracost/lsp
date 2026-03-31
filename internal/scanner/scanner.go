@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hashicorp/go-hclog"
@@ -19,7 +18,7 @@ import (
 	goprotoevent "github.com/infracost/go-proto/pkg/event"
 	providerconv "github.com/infracost/go-proto/pkg/providers"
 	"github.com/infracost/go-proto/pkg/rat"
-	"github.com/infracost/proto/gen/go/infracost/parser/api"
+	parserapi "github.com/infracost/proto/gen/go/infracost/parser/api"
 	"github.com/infracost/proto/gen/go/infracost/parser/cloudformation"
 	"github.com/infracost/proto/gen/go/infracost/parser/event"
 	"github.com/infracost/proto/gen/go/infracost/parser/options"
@@ -30,6 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/dashboard"
 	"github.com/infracost/lsp/internal/plugins/parser"
 	"github.com/infracost/lsp/internal/plugins/providers"
@@ -45,9 +45,8 @@ type Scanner struct {
 	Currency          string
 	PricingEndpoint   string
 	DashboardEndpoint string
-
-	tokenMu     sync.RWMutex
-	tokenSource oauth2.TokenSource // refreshable OAuth2 token source
+	TokenSource *api.TokenSource
+	OnOrgID     func(string)
 
 	tagPolicies        []*event.TagPolicy
 	runParamsOrgID     string
@@ -64,15 +63,7 @@ func (s *Scanner) Init() {
 
 // accessToken returns a valid access token from the token source.
 func (s *Scanner) accessToken() (string, error) {
-	s.tokenMu.RLock()
-	ts := s.tokenSource
-	s.tokenMu.RUnlock()
-
-	if ts == nil {
-		return "", fmt.Errorf("no token source configured")
-	}
-
-	tok, err := ts.Token()
+	tok, err := s.TokenSource.Token()
 	if err != nil {
 		return "", fmt.Errorf("getting token: %w", err)
 	}
@@ -81,19 +72,9 @@ func (s *Scanner) accessToken() (string, error) {
 	return tok.AccessToken, nil
 }
 
-// SetTokenSource replaces the scanner's OAuth2 token source.
-// Used after a successful login flow.
-func (s *Scanner) SetTokenSource(ts oauth2.TokenSource) {
-	s.tokenMu.Lock()
-	s.tokenSource = ts
-	s.tokenMu.Unlock()
-}
-
 // HasTokenSource reports whether a token source is configured.
 func (s *Scanner) HasTokenSource() bool {
-	s.tokenMu.RLock()
-	defer s.tokenMu.RUnlock()
-	return s.tokenSource != nil
+	return s.TokenSource.Valid()
 }
 
 // SetRunParamsTTL sets how long fetchRunParams results are cached.
@@ -105,11 +86,7 @@ func (s *Scanner) SetRunParamsTTL(d time.Duration) {
 // fetchRunParams queries the dashboard API for run parameters (org ID, tag policies, etc.)
 // and stores parsed tag policies on the scanner. Returns org ID (empty on failure, non-fatal).
 func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
-	s.tokenMu.RLock()
-	ts := s.tokenSource
-	s.tokenMu.RUnlock()
-
-	if ts == nil {
+	if !s.TokenSource.Valid() {
 		return ""
 	}
 
@@ -121,7 +98,7 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 	repoURL := vcs.GetRemoteURL(rootDir)
 	branch := vcs.GetCurrentBranch(rootDir)
 
-	client := dashboard.NewClient(oauth2.NewClient(ctx, ts), s.DashboardEndpoint)
+	client := dashboard.NewClient(oauth2.NewClient(ctx, s.TokenSource), s.DashboardEndpoint)
 	params, err := client.RunParameters(ctx, "", repoURL, branch)
 	if err != nil {
 		slog.Warn("fetchRunParams: failed to get run parameters", "error", err)
@@ -140,6 +117,10 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 
 	s.runParamsOrgID = params.OrganizationID
 	s.runParamsFetchedAt = time.Now()
+
+	if s.OnOrgID != nil {
+		s.OnOrgID(params.OrganizationID)
+	}
 
 	slog.Debug("fetchRunParams: resolved", "org_id", params.OrganizationID, "tag_policies", len(s.tagPolicies))
 	return params.OrganizationID
@@ -246,13 +227,13 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	srcLocs := make(map[string]sourceLocation)
 	modLocs := make(map[string]sourceLocation)
 	switch pr := parseResp.Result.Value.(type) {
-	case *api.ParseResponseResult_Terraform:
+	case *parserapi.ParseResponseResult_Terraform:
 		rps := make(map[provider.Provider]struct{})
 		getRequiredProviders(pr.Terraform, rps)
 		requiredProviders = slices.Collect(maps.Keys(rps))
 		getSourceLocations(pr.Terraform, "", srcLocs, modLocs)
 		slog.Debug("scanProject: source locations", "count", len(srcLocs), "module_locations", len(modLocs), "providers", requiredProviders)
-	case *api.ParseResponseResult_Cloudformation:
+	case *parserapi.ParseResponseResult_Cloudformation:
 		requiredProviders = []provider.Provider{provider.Provider_PROVIDER_AWS}
 	default:
 		return nil, fmt.Errorf("unsupported parse result type: %T", pr)
@@ -407,10 +388,7 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 	}
 
 	if len(uncached) > 0 {
-		s.tokenMu.RLock()
-		ts := s.tokenSource
-		s.tokenMu.RUnlock()
-		client := dashboard.NewClient(oauth2.NewClient(ctx, ts), s.DashboardEndpoint)
+		client := dashboard.NewClient(oauth2.NewClient(ctx, s.TokenSource), s.DashboardEndpoint)
 		details, err := client.PolicyDetails(ctx, orgID, uncached)
 		if err != nil {
 			slog.Warn("attachPolicyDetails: failed to fetch policy details", "error", err)
@@ -479,7 +457,7 @@ func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, i
 	return resp.Output.Resources, resp.Output.FinopsResults, nil
 }
 
-func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config, project *repoconfig.Project, rootDir string) (*api.ParseResponse, error) {
+func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config, project *repoconfig.Project, rootDir string) (*parserapi.ParseResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
@@ -500,7 +478,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 		WorkingDirectory:   rootDir,
 	}
 
-	var target *api.ParseRequestTarget
+	var target *parserapi.ParseRequestTarget
 	switch project.Type {
 	case repoconfig.ProjectTypeCloudFormation:
 		target = buildCloudFormationTarget(path, project, genericOpts)
@@ -514,7 +492,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 		"project_type", project.Type,
 	)
 
-	resp, err := client.Parse(ctx, &api.ParseRequest{
+	resp, err := client.Parse(ctx, &parserapi.ParseRequest{
 		RepoDirectory:    rootDir,
 		WorkingDirectory: rootDir,
 		Target:           target,
@@ -525,7 +503,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 		if err != nil {
 			return nil, fmt.Errorf("reconnecting parser plugin: %w", err)
 		}
-		resp, err = client.Parse(ctx, &api.ParseRequest{
+		resp, err = client.Parse(ctx, &parserapi.ParseRequest{
 			RepoDirectory:    rootDir,
 			WorkingDirectory: rootDir,
 			Target:           target,
@@ -540,7 +518,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	return resp, nil
 }
 
-func buildTerraformTarget(path string, cfg *repoconfig.Config, project *repoconfig.Project, generic *options.GenericOptions) *api.ParseRequestTarget {
+func buildTerraformTarget(path string, cfg *repoconfig.Config, project *repoconfig.Project, generic *options.GenericOptions) *parserapi.ParseRequestTarget {
 	var regexSourceMap map[string]string
 	if len(cfg.Terraform.SourceMap) > 0 {
 		regexSourceMap = make(map[string]string, len(cfg.Terraform.SourceMap))
@@ -549,8 +527,8 @@ func buildTerraformTarget(path string, cfg *repoconfig.Config, project *repoconf
 		}
 	}
 
-	return &api.ParseRequestTarget{
-		Value: &api.ParseRequestTarget_Terraform{
+	return &parserapi.ParseRequestTarget{
+		Value: &parserapi.ParseRequestTarget_Terraform{
 			Terraform: &terraform.Target{
 				Directory: path,
 				Options: &terraform.Options{
@@ -565,7 +543,7 @@ func buildTerraformTarget(path string, cfg *repoconfig.Config, project *repoconf
 	}
 }
 
-func buildCloudFormationTarget(path string, project *repoconfig.Project, generic *options.GenericOptions) *api.ParseRequestTarget {
+func buildCloudFormationTarget(path string, project *repoconfig.Project, generic *options.GenericOptions) *parserapi.ParseRequestTarget {
 	var awsCtx *cloudformation.AwsContext
 	if project.AWS.AccountID != "" || project.AWS.Region != "" || project.AWS.StackID != "" || project.AWS.StackName != "" {
 		awsCtx = &cloudformation.AwsContext{
@@ -576,8 +554,8 @@ func buildCloudFormationTarget(path string, project *repoconfig.Project, generic
 		}
 	}
 
-	return &api.ParseRequestTarget{
-		Value: &api.ParseRequestTarget_Cloudformation{
+	return &parserapi.ParseRequestTarget{
+		Value: &parserapi.ParseRequestTarget_Cloudformation{
 			Cloudformation: &cloudformation.Target{
 				TemplatePath: path,
 				Options: &cloudformation.Options{

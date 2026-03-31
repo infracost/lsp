@@ -19,6 +19,7 @@ import (
 
 	repoconfig "github.com/infracost/config"
 
+	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/events"
 	"github.com/infracost/lsp/internal/ignore"
 	"github.com/infracost/lsp/internal/scanner"
@@ -39,11 +40,12 @@ const defaultRunParamsCacheTTLSeconds = 300
 var isWindows = runtime.GOOS == "windows"
 
 type Server struct {
-	scanner *scanner.Scanner
-	events  events.Client
-	client  *server.Client
-	srv     *server.Server
-	ignores *ignore.Store
+	scanner     *scanner.Scanner
+	events      events.Client
+	tokenSource *api.TokenSource
+	client      *server.Client
+	srv         *server.Server
+	ignores     *ignore.Store
 
 	mu             sync.RWMutex
 	settings       Settings
@@ -75,7 +77,7 @@ type Server struct {
 	loginCancel     context.CancelFunc
 }
 
-func NewServer(s *scanner.Scanner, eventsClient events.Client) *Server {
+func NewServer(s *scanner.Scanner, eventsClient events.Client, ts *api.TokenSource) *Server {
 	ignores, err := ignore.NewStore()
 	if err != nil {
 		slog.Warn("failed to load ignore store", "error", err)
@@ -84,6 +86,7 @@ func NewServer(s *scanner.Scanner, eventsClient events.Client) *Server {
 	return &Server{
 		scanner:              s,
 		events:               eventsClient,
+		tokenSource:          ts,
 		ignores:              ignores,
 		projectResults:       make(map[string]*scanner.ScanResult),
 		filesWithDiagnostics: make(map[string]struct{}),

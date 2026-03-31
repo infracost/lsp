@@ -148,7 +148,7 @@ func TestInlayHint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := NewServer(nil, nil)
+			srv := NewServer(nil, nil, nil)
 
 			if tt.scanning {
 				srv.scanningProjects["test"] = struct{}{}
