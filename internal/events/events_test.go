@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,20 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type staticTokenSource string
-
-func (s staticTokenSource) Token() (string, error) { return string(s), nil }
-
-type failingTokenSource struct{}
-
-func (failingTokenSource) Token() (string, error) { return "", fmt.Errorf("no token") }
-
 func TestPush(t *testing.T) {
 	tests := []struct {
-		name        string
-		tokenSource TokenSource
-		extra       []interface{}
-		assertReq   func(t *testing.T, r *http.Request, env map[string]interface{})
+		name      string
+		extra     []interface{}
+		assertReq func(t *testing.T, r *http.Request, env map[string]interface{})
 	}{
 		{
 			name: "sends correct payload with metadata",
@@ -48,26 +38,6 @@ func TestPush(t *testing.T) {
 				assert.NotEmpty(t, env["installId"])
 			},
 		},
-		{
-			name:        "sends bearer token",
-			tokenSource: staticTokenSource("my-jwt-token"),
-			assertReq: func(t *testing.T, r *http.Request, _ map[string]interface{}) {
-				assert.Equal(t, "Bearer my-jwt-token", r.Header.Get("Authorization"))
-			},
-		},
-		{
-			name: "no auth header without token source",
-			assertReq: func(t *testing.T, r *http.Request, _ map[string]interface{}) {
-				assert.Empty(t, r.Header.Get("Authorization"))
-			},
-		},
-		{
-			name:        "no auth header on token error",
-			tokenSource: failingTokenSource{},
-			assertReq: func(t *testing.T, r *http.Request, _ map[string]interface{}) {
-				assert.Empty(t, r.Header.Get("Authorization"))
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -87,10 +57,7 @@ func TestPush(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c := NewClient(srv.Client(), srv.URL)
-			if tt.tokenSource != nil {
-				c.SetTokenSource(tt.tokenSource)
-			}
+			c := NewClient(http.DefaultClient, srv.URL)
 			c.Push(context.Background(), "test-event", tt.extra...)
 
 			require.NotNil(t, captured.req)

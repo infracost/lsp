@@ -8,6 +8,8 @@ import (
 
 	"github.com/owenrumney/go-lsp/lsp"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/infracost/lsp/internal/api"
 	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/lsp/internal/scanner"
@@ -148,7 +150,7 @@ func TestInlayHint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := NewServer(nil, nil)
+			srv := NewServer(nil, nil, api.NewTokenSource(nil))
 
 			if tt.scanning {
 				srv.scanningProjects["test"] = struct{}{}

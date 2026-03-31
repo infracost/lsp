@@ -9,10 +9,12 @@ import (
 	"github.com/owenrumney/go-lsp/servertest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/infracost/lsp/internal/api"
 )
 
 func TestInitializeCapabilities(t *testing.T) {
-	h := servertest.New(t, NewServer(nil, nil))
+	h := servertest.New(t, NewServer(nil, nil, api.NewTokenSource(nil)))
 
 	result := h.InitResult
 	require.NotNil(t, result)
