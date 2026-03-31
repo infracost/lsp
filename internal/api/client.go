@@ -65,14 +65,18 @@ func (t *Transport) SetOrgID(id string) {
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r := req.Clone(req.Context())
-	if tok, err := t.ts.Token(); err == nil {
+	if tok, err := t.ts.Token(); err == nil && tok.AccessToken != "" {
 		r.Header.Set("Authorization", tok.Type()+" "+tok.AccessToken)
 	}
 	r.Header.Set("User-Agent", trace.UserAgent)
 	if id := t.orgID.Load(); id != nil && *id != "" {
 		r.Header.Set("x-infracost-org-id", *id)
 	}
-	return t.Base.RoundTrip(r)
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
 }
 
 // NewHTTPClient creates an *http.Client whose transport adds auth,

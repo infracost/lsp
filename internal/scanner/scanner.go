@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +25,6 @@ import (
 	"github.com/infracost/proto/gen/go/infracost/parser/options"
 	"github.com/infracost/proto/gen/go/infracost/parser/terraform"
 	"github.com/infracost/proto/gen/go/infracost/provider"
-	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -46,6 +46,7 @@ type Scanner struct {
 	PricingEndpoint   string
 	DashboardEndpoint string
 	TokenSource       *api.TokenSource
+	HTTPClient        *http.Client
 	OnOrgID           func(string)
 
 	tagPolicies        []*event.TagPolicy
@@ -63,6 +64,10 @@ func (s *Scanner) Init() {
 
 // accessToken returns a valid access token from the token source.
 func (s *Scanner) accessToken() (string, error) {
+	if s.TokenSource == nil {
+		return "", fmt.Errorf("no token source configured")
+	}
+
 	tok, err := s.TokenSource.Token()
 	if err != nil {
 		return "", fmt.Errorf("getting token: %w", err)
@@ -74,7 +79,7 @@ func (s *Scanner) accessToken() (string, error) {
 
 // HasTokenSource reports whether a token source is configured.
 func (s *Scanner) HasTokenSource() bool {
-	return s.TokenSource.Valid()
+	return s.TokenSource != nil && s.TokenSource.Valid()
 }
 
 // SetRunParamsTTL sets how long fetchRunParams results are cached.
@@ -98,7 +103,7 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 	repoURL := vcs.GetRemoteURL(rootDir)
 	branch := vcs.GetCurrentBranch(rootDir)
 
-	client := dashboard.NewClient(oauth2.NewClient(ctx, s.TokenSource), s.DashboardEndpoint)
+	client := dashboard.NewClient(s.HTTPClient, s.DashboardEndpoint)
 	params, err := client.RunParameters(ctx, "", repoURL, branch)
 	if err != nil {
 		slog.Warn("fetchRunParams: failed to get run parameters", "error", err)
@@ -388,7 +393,7 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 	}
 
 	if len(uncached) > 0 {
-		client := dashboard.NewClient(oauth2.NewClient(ctx, s.TokenSource), s.DashboardEndpoint)
+		client := dashboard.NewClient(s.HTTPClient, s.DashboardEndpoint)
 		details, err := client.PolicyDetails(ctx, orgID, uncached)
 		if err != nil {
 			slog.Warn("attachPolicyDetails: failed to fetch policy details", "error", err)

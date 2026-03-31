@@ -113,6 +113,7 @@ func main() {
 		PricingEndpoint:   cfg.PricingEndpoint,
 		DashboardEndpoint: cfg.DashboardEndpoint,
 		TokenSource:       tokenSource,
+		HTTPClient:        httpClient,
 		OnOrgID: func(id string) {
 			apiTransport.SetOrgID(id)
 			events.RegisterMetadata("orgId", id)
