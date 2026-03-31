@@ -36,23 +36,20 @@ func TestTransport_WithoutToken(t *testing.T) {
 	ts := NewTokenSource(nil)
 	client, _ := NewHTTPClient(ts)
 
-	var captured http.Header
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = r.Header.Clone()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	resp, err := client.Get(srv.URL)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-
-	assert.Empty(t, captured.Get("Authorization"))
-	assert.Contains(t, captured.Get("User-Agent"), "infracost-lsp")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	assert.ErrorContains(t, err, "no token source configured")
 }
 
 func TestTransport_OrgID(t *testing.T) {
-	ts := NewTokenSource(nil)
+	ts := NewTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"}))
 	client, transport := NewHTTPClient(ts)
 	transport.SetOrgID("org-123")
 
@@ -71,7 +68,7 @@ func TestTransport_OrgID(t *testing.T) {
 }
 
 func TestTransport_EmptyOrgID(t *testing.T) {
-	ts := NewTokenSource(nil)
+	ts := NewTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"}))
 	client, _ := NewHTTPClient(ts)
 
 	var captured http.Header

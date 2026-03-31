@@ -50,8 +50,7 @@ func (s *TokenSource) Valid() bool {
 }
 
 // Transport is an http.RoundTripper that adds authentication, User-Agent,
-// and x-infracost-org-id headers to outgoing requests. Authentication is
-// best-effort: if no token is available the request proceeds without it.
+// and x-infracost-org-id headers to outgoing requests.
 type Transport struct {
 	Base  http.RoundTripper
 	ts    *TokenSource
@@ -64,8 +63,12 @@ func (t *Transport) SetOrgID(id string) {
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tok, err := t.ts.Token()
+	if err != nil {
+		return nil, fmt.Errorf("getting token: %w", err)
+	}
 	r := req.Clone(req.Context())
-	if tok, err := t.ts.Token(); err == nil && tok.AccessToken != "" {
+	if tok.AccessToken != "" {
 		r.Header.Set("Authorization", tok.Type()+" "+tok.AccessToken)
 	}
 	r.Header.Set("User-Agent", trace.UserAgent)
