@@ -177,6 +177,7 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 	if params.ClientInfo != nil {
 		if params.ClientInfo.Name != "" {
 			events.RegisterMetadata("caller", params.ClientInfo.Name)
+			events.RegisterMetadata("cliPlatform", params.ClientInfo.Name)
 		}
 	}
 
@@ -193,6 +194,7 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 	}
 	if initOpts.ClientName != "" {
 		events.RegisterMetadata("caller", initOpts.ClientName)
+		events.RegisterMetadata("cliPlatform", initOpts.ClientName)
 	}
 	if initOpts.ExtensionVersion != "" {
 		events.RegisterMetadata("version", initOpts.ExtensionVersion)
