@@ -59,17 +59,18 @@ type ModuleCost struct {
 
 // TagViolation represents a tagging policy violation for a resource.
 type TagViolation struct {
-	PolicyName   string
-	BlockPR      bool
-	Address      string
-	ResourceType string
-	Filename     string
-	StartLine    int64
-	EndLine      int64
-	Message      string
-	MissingTags  []string
-	InvalidTags  []InvalidTagResult
-	Markdown     string
+	PolicyName    string
+	PolicyMessage string
+	BlockPR       bool
+	Address       string
+	ResourceType  string
+	Filename      string
+	StartLine     int64
+	EndLine       int64
+	Message       string
+	MissingTags   []string
+	InvalidTags   []InvalidTagResult
+	Markdown      string
 }
 
 // InvalidTagResult describes a tag with an invalid value.

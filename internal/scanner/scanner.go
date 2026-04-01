@@ -111,7 +111,8 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 	}
 
 	s.tagPolicies = nil
-	for _, raw := range params.TagPolicies {
+	for i, raw := range params.TagPolicies {
+		slog.Debug("fetchRunParams: raw tag policy", "index", i, "json", string(raw))
 		var tp event.TagPolicy
 		if err := protojson.Unmarshal(raw, &tp); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal tag policy", "error", err)
@@ -686,9 +687,10 @@ func convertTagViolations(results []goprotoevent.TaggingPolicyResult, resources 
 	for _, tr := range results {
 		for _, fr := range tr.FailingResources {
 			v := TagViolation{
-				PolicyName: tr.Name,
-				BlockPR:    tr.BlockPR,
-				Address:    fr.Address,
+				PolicyName:    tr.Name,
+				PolicyMessage: tr.Message,
+				BlockPR:       tr.BlockPR,
+				Address:       fr.Address,
 
 				ResourceType: fr.ResourceType,
 				MissingTags:  fr.MissingMandatoryTags,
