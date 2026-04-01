@@ -48,11 +48,12 @@ type ViolationDetail struct {
 }
 
 type TagViolationDetail struct {
-	PolicyName  string             `json:"policyName"`
-	BlockPR     bool               `json:"blockPR"`
-	Message     string             `json:"message"`
-	MissingTags []string           `json:"missingTags,omitempty"`
-	InvalidTags []InvalidTagDetail `json:"invalidTags,omitempty"`
+	PolicyName    string             `json:"policyName"`
+	BlockPR       bool               `json:"blockPR"`
+	Message       string             `json:"message"`
+	PolicyMessage string             `json:"policyMessage,omitempty"`
+	MissingTags   []string           `json:"missingTags,omitempty"`
+	InvalidTags   []InvalidTagDetail `json:"invalidTags,omitempty"`
 }
 
 type InvalidTagDetail struct {
@@ -165,10 +166,11 @@ func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsVi
 
 	for _, v := range tagViolations {
 		td := TagViolationDetail{
-			PolicyName:  v.PolicyName,
-			BlockPR:     v.BlockPR,
-			Message:     v.Message,
-			MissingTags: v.MissingTags,
+			PolicyName:    v.PolicyName,
+			BlockPR:       v.BlockPR,
+			Message:       v.Message,
+			PolicyMessage: v.PolicyMessage,
+			MissingTags:   v.MissingTags,
 		}
 		for _, it := range v.InvalidTags {
 			td.InvalidTags = append(td.InvalidTags, InvalidTagDetail{
