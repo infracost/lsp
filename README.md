@@ -108,6 +108,14 @@ vim.api.nvim_create_autocmd("FileType", {
 
 This starts the LSP client automatically when opening `.tf` files. Make sure `infracost-ls` is on your `PATH` (see Development below).
 
+## Contributing
+
+We welcome contributions! Please start by opening a thread in [GitHub Discussions](https://github.com/infracost/infracost/discussions) to discuss your idea before submitting a PR.
+
+## Bugs and feedback
+
+If you run into any issues or have feedback, please open a thread in [GitHub Discussions](https://github.com/infracost/infracost/discussions). We'd love to hear from you!
+
 <h2>Development</h2>
 <details>
 <summary>Information about developing the LSP</summary>
