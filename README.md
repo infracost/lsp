@@ -24,11 +24,11 @@ A Language Server Protocol (LSP) server that shows cloud cost estimates inline w
 
 ## Editor Extensions
 
-> [!NOTE]
-> These extensions are in beta. Formal marketplace releases are coming soon.
+Find the extension either through the IDE Extension/Plugin marketplace or in the browser with the links below;
 
-- **VS Code**: [vscode-infracost v0.3.0-beta.2](https://github.com/infracost/vscode-infracost/releases/tag/v0.3.0-beta.2)
-- **JetBrains**: [jetbrains-infracost v2.0.0-beta.1](https://github.com/infracost/jetbrains-infracost/releases/tag/v2.0.0-beta.1)
+- **VS Code**: [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Infracost.infracost)
+- **Cursor/Windsurf/Anitgravity**: [OpenVSX Marketplace](https://open-vsx.org/extension/infracost/infracost)
+- **JetBrains**: [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/24761-infracost)
 
 ## Quickstart
 
@@ -42,11 +42,11 @@ A Language Server Protocol (LSP) server that shows cloud cost estimates inline w
 
 The LSP server is configured via environment variables. Most are optional — the server discovers plugins from `PATH` by default.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `INFRACOST_CLI_CURRENCY` | Currency for cost estimates | `USD` |
-| `INFRACOST_LOG_LEVEL` | Log level (`debug` for verbose) | `warn` |
-| `INFRACOST_DEBUG_UI` | Port for debug UI (development only) | _(disabled)_ |
+| Variable                 | Description                          | Default      |
+| ------------------------ | ------------------------------------ | ------------ |
+| `INFRACOST_CLI_CURRENCY` | Currency for cost estimates          | `USD`        |
+| `INFRACOST_LOG_LEVEL`    | Log level (`debug` for verbose)      | `warn`       |
+| `INFRACOST_DEBUG_UI`     | Port for debug UI (development only) | _(disabled)_ |
 
 ### Workspace configuration
 
@@ -124,17 +124,17 @@ If you run into any issues or have feedback, please open a thread in [GitHub Dis
 
 These override the plugin binaries the server launches. You only need them if the plugins aren't on your `PATH` or you want to test local builds.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `INFRACOST_CLI_PARSER_PLUGIN` | Path to the parser plugin binary | `infracost-parser-plugin` (from PATH) |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS` | Path to the AWS provider plugin | `infracost-provider-plugin-aws` (from PATH) |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE` | Path to the GCP provider plugin | `infracost-provider-plugin-google` (from PATH) |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURERM` | Path to the Azure provider plugin | `infracost-provider-plugin-azurerm` (from PATH) |
-| `INFRACOST_CLI_PARSER_PLUGIN_VERSION` | Parser plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS_VERSION` | AWS provider plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE_VERSION` | GCP provider plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION` | Azure provider plugin version override | _(latest)_ |
-| `INFRACOST_CLI_PLUGIN_MANIFEST_URL` | URL for the plugin manifest | `https://releases.infracost.io/plugins/manifest.json` |
+| Variable                                       | Description                            | Default                                               |
+| ---------------------------------------------- | -------------------------------------- | ----------------------------------------------------- |
+| `INFRACOST_CLI_PARSER_PLUGIN`                  | Path to the parser plugin binary       | `infracost-parser-plugin` (from PATH)                 |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS`            | Path to the AWS provider plugin        | `infracost-provider-plugin-aws` (from PATH)           |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE`         | Path to the GCP provider plugin        | `infracost-provider-plugin-google` (from PATH)        |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURERM`        | Path to the Azure provider plugin      | `infracost-provider-plugin-azurerm` (from PATH)       |
+| `INFRACOST_CLI_PARSER_PLUGIN_VERSION`          | Parser plugin version override         | _(latest)_                                            |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AWS_VERSION`    | AWS provider plugin version override   | _(latest)_                                            |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE_VERSION` | GCP provider plugin version override   | _(latest)_                                            |
+| `INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION`  | Azure provider plugin version override | _(latest)_                                            |
+| `INFRACOST_CLI_PLUGIN_MANIFEST_URL`            | URL for the plugin manifest            | `https://releases.infracost.io/plugins/manifest.json` |
 
 ### Building
 
