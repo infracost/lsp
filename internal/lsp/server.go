@@ -496,6 +496,12 @@ func (s *Server) getMergedResult() *scanner.ScanResult {
 	return merged
 }
 
+func (s *Server) getProjectResult(name string) *scanner.ScanResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.projectResults[name]
+}
+
 func (s *Server) setProjectResult(name string, result *scanner.ScanResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

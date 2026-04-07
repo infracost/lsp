@@ -1,14 +1,18 @@
 package lsp
 
 import (
+	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	repoconfig "github.com/infracost/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/lsp/internal/api"
+	"github.com/infracost/lsp/internal/scanner"
 )
 
 func TestScheduleAnalyzeDebounce(t *testing.T) {
@@ -123,5 +127,133 @@ func TestScheduleAnalyzeCancelsInFlight(t *testing.T) {
 		// The old in-flight scan was cancelled.
 	case <-time.After(time.Second):
 		assert.Fail(t, "expected in-flight scan to be cancelled")
+	}
+}
+
+// spyEvents records all pushed events for assertion.
+type spyEvents struct {
+	mu     sync.Mutex
+	events []spyEvent
+}
+
+type spyEvent struct {
+	Name  string
+	Extra []interface{}
+}
+
+func (s *spyEvents) Push(_ context.Context, event string, extra ...interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, spyEvent{Name: event, Extra: extra})
+}
+
+func (s *spyEvents) get() []spyEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]spyEvent(nil), s.events...)
+}
+
+func TestTrackDiff(t *testing.T) {
+	tests := []struct {
+		name       string
+		prev       *scanner.ScanResult // nil means no previous result stored
+		current    *scanner.ScanResult
+		wantEvents int
+		wantExtra  []interface{} // values expected in the first event's Extra slice
+	}{
+		{
+			name: "finops violation fixed",
+			prev: &scanner.ScanResult{
+				Violations: []scanner.FinopsViolation{
+					{PolicyID: "p1", PolicySlug: "slug-a", Address: "aws_instance.a"},
+					{PolicyID: "p2", PolicySlug: "slug-b", Address: "aws_instance.b"},
+				},
+			},
+			current: &scanner.ScanResult{
+				Violations: []scanner.FinopsViolation{
+					{PolicyID: "p2", PolicySlug: "slug-b", Address: "aws_instance.b"},
+				},
+			},
+			wantEvents: 1,
+			wantExtra:  []interface{}{"policyId", "p1", "finops-policy", "aws_instance.a"},
+		},
+		{
+			name: "tag violation fixed",
+			prev: &scanner.ScanResult{
+				TagViolations: []scanner.TagViolation{
+					{PolicyID: "tp1", Address: "aws_s3_bucket.a"},
+					{PolicyID: "tp2", Address: "aws_s3_bucket.b"},
+				},
+			},
+			current: &scanner.ScanResult{
+				TagViolations: []scanner.TagViolation{
+					{PolicyID: "tp2", Address: "aws_s3_bucket.b"},
+				},
+			},
+			wantEvents: 1,
+			wantExtra:  []interface{}{"tag-policy", "aws_s3_bucket.a"},
+		},
+		{
+			name: "no previous result",
+			prev: nil,
+			current: &scanner.ScanResult{
+				Violations: []scanner.FinopsViolation{
+					{PolicySlug: "slug-a", Address: "aws_instance.a"},
+				},
+			},
+			wantEvents: 0,
+		},
+		{
+			name: "no changes",
+			prev: &scanner.ScanResult{
+				Violations: []scanner.FinopsViolation{
+					{PolicySlug: "slug-a", Address: "aws_instance.a"},
+				},
+			},
+			current: &scanner.ScanResult{
+				Violations: []scanner.FinopsViolation{
+					{PolicySlug: "slug-a", Address: "aws_instance.a"},
+				},
+			},
+			wantEvents: 0,
+		},
+		{
+			name: "all violations fixed",
+			prev: &scanner.ScanResult{
+				Violations: []scanner.FinopsViolation{
+					{PolicyID: "p1", PolicySlug: "slug-a", Address: "aws_instance.a"},
+				},
+				TagViolations: []scanner.TagViolation{
+					{PolicyID: "tp1", Address: "aws_s3_bucket.a"},
+				},
+			},
+			current:    &scanner.ScanResult{},
+			wantEvents: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spy := &spyEvents{}
+			srv := NewServer(nil, nil, api.NewTokenSource(nil))
+			srv.events = spy
+
+			if tt.prev != nil {
+				srv.setProjectResult("proj", tt.prev)
+			}
+
+			srv.trackDiff(context.Background(), "proj", tt.current)
+			time.Sleep(50 * time.Millisecond)
+
+			events := spy.get()
+			require.Len(t, events, tt.wantEvents)
+
+			if tt.wantEvents > 0 {
+				assert.Equal(t, "cloud-issue-fixed", events[0].Name)
+				for _, v := range tt.wantExtra {
+					assert.Contains(t, events[0].Extra, v)
+				}
+			}
+		})
 	}
 }

@@ -50,6 +50,7 @@ type Scanner struct {
 	OnOrgID           func(string)
 
 	tagPolicies        []*event.TagPolicy
+	finopsPolicies     []*event.FinopsPolicySettings
 	runParamsOrgID     string
 	runParamsFetchedAt time.Time
 	runParamsTTL       time.Duration
@@ -119,6 +120,17 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 			continue
 		}
 		s.tagPolicies = append(s.tagPolicies, &tp)
+	}
+
+	s.finopsPolicies = nil
+	for i, raw := range params.FinopsPolicies {
+		slog.Debug("fetchRunParams: raw finops policy", "index", i, "json", string(raw))
+		var fp event.FinopsPolicySettings
+		if err := protojson.Unmarshal(raw, &fp); err != nil {
+			slog.Warn("fetchRunParams: failed to unmarshal finops policy", "error", err)
+			continue
+		}
+		s.finopsPolicies = append(s.finopsPolicies, &fp)
 	}
 
 	s.runParamsOrgID = params.OrganizationID
@@ -269,6 +281,9 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		Features: &provider.Features{
 			EnablePriceLookups:   true,
 			EnableFinopsPolicies: true,
+		},
+		FinopsPolicyConfig: &provider.FinopsPolicyConfiguration{
+			Policies: s.finopsPolicies,
 		},
 		Settings: &provider.Settings{
 			Currency:      currency,
@@ -687,6 +702,7 @@ func convertTagViolations(results []goprotoevent.TaggingPolicyResult, resources 
 	for _, tr := range results {
 		for _, fr := range tr.FailingResources {
 			v := TagViolation{
+				PolicyID:      tr.TagPolicyID,
 				PolicyName:    tr.Name,
 				PolicyMessage: tr.Message,
 				BlockPR:       tr.BlockPR,
@@ -793,6 +809,7 @@ func convertFinopsViolations(finops []*provider.FinopsPolicyResult, resources []
 		for _, fr := range fp.FailingResources {
 			for _, issue := range fr.Issues {
 				v := FinopsViolation{
+					PolicyID:         fp.PolicyId,
 					PolicyName:       fp.PolicyName,
 					PolicySlug:       fp.PolicySlug,
 					BlockPullRequest: fp.BlockPullRequest,

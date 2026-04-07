@@ -32,6 +32,7 @@ type CostComponent struct {
 
 // FinopsViolation represents a FinOps policy violation for a resource.
 type FinopsViolation struct {
+	PolicyID         string
 	PolicyName       string
 	PolicySlug       string
 	BlockPullRequest bool
@@ -59,6 +60,7 @@ type ModuleCost struct {
 
 // TagViolation represents a tagging policy violation for a resource.
 type TagViolation struct {
+	PolicyID      string
 	PolicyName    string
 	PolicyMessage string
 	BlockPR       bool

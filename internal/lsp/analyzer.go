@@ -145,6 +145,7 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 		)
 	}
 
+	s.trackDiff(ctx, project.Name, result)
 	s.setProjectResult(project.Name, result)
 	s.refreshCodeLenses()
 	s.refreshInlayHints()
@@ -212,6 +213,7 @@ func (s *Server) analyzeFullScan(uri string) {
 		totalResources += len(result.Resources)
 		totalViolations += len(result.Violations)
 
+		s.trackDiff(ctx, project.Name, result)
 		s.setProjectResult(project.Name, result)
 		s.refreshCodeLenses()
 		s.refreshInlayHints()
@@ -253,6 +255,77 @@ func (s *Server) trackRun(ctx context.Context, result *scanner.ScanResult, elaps
 		"supportedResourceCounts", supportedCounts,
 		"unsupportedResourceCounts", unsupportedCounts,
 	)
+}
+
+// trackDiff compares the new scan result against the previous result for the
+// same project and fires a "cloud-issue-fixed" event for every violation that
+// was present before but is no longer present.
+func (s *Server) trackDiff(ctx context.Context, projectName string, result *scanner.ScanResult) {
+	if s.events == nil {
+		return
+	}
+
+	prev := s.getProjectResult(projectName)
+	if prev == nil {
+		return
+	}
+
+	slog.Debug("trackDiff: comparing results",
+		"project", projectName,
+		"prevFinops", len(prev.Violations),
+		"newFinops", len(result.Violations),
+		"prevTags", len(prev.TagViolations),
+		"newTags", len(result.TagViolations),
+	)
+
+	detachedCtx := context.WithoutCancel(ctx)
+
+	// Finops violations: keyed by (policySlug, address).
+	currentFinops := make(map[[2]string]struct{}, len(result.Violations))
+	for _, v := range result.Violations {
+		currentFinops[[2]string{v.PolicySlug, v.Address}] = struct{}{}
+	}
+	for _, v := range prev.Violations {
+		if _, ok := currentFinops[[2]string{v.PolicySlug, v.Address}]; ok {
+			continue
+		}
+		slog.Debug("trackDiff: finops issue fixed",
+			"policySlug", v.PolicySlug,
+			"address", v.Address,
+		)
+		go s.events.Push(detachedCtx, "cloud-issue-fixed",
+			"policyId", v.PolicyID,
+			"policySlug", v.PolicySlug,
+			"type", "finops-policy",
+			"projectName", projectName,
+			"resourceAddress", v.Address,
+			"pullRequestId", "",
+			"autoFixPullRequest", false,
+		)
+	}
+
+	// Tag violations: keyed by (policyID, address).
+	currentTags := make(map[[2]string]struct{}, len(result.TagViolations))
+	for _, v := range result.TagViolations {
+		currentTags[[2]string{v.PolicyID, v.Address}] = struct{}{}
+	}
+	for _, v := range prev.TagViolations {
+		if _, ok := currentTags[[2]string{v.PolicyID, v.Address}]; ok {
+			continue
+		}
+		slog.Debug("trackDiff: tag issue fixed",
+			"policyID", v.PolicyID,
+			"address", v.Address,
+		)
+		go s.events.Push(detachedCtx, "cloud-issue-fixed",
+			"policyId", v.PolicyID,
+			"type", "tag-policy",
+			"projectName", projectName,
+			"resourceAddress", v.Address,
+			"pullRequestId", "",
+			"autoFixPullRequest", false,
+		)
+	}
 }
 
 func safeLineToLSP(line int64) int {
