@@ -148,6 +148,8 @@ func main() {
 	lspServer.SetServer(srv)
 
 	srv.HandleMethod("infracost/resourceDetails", lspServer.HandleResourceDetails)
+	srv.HandleMethod("infracost/fileSummary", lspServer.HandleFileSummary)
+	srv.HandleMethod("infracost/status", lspServer.HandleStatus)
 	srv.HandleMethod("infracost/login", lspServer.HandleLogin)
 	srv.HandleMethod("infracost/update", lspServer.HandleUpdate)
 
