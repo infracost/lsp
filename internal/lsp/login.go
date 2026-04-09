@@ -85,7 +85,12 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 
 	slog.Info("login: device flow complete")
 	s.tokenSource.Set(tokenSource)
-	s.showMessage(ctx, lsp.MessageTypeInfo, "Logged in to Infracost")
+
+	if s.client != nil {
+		if err := s.client.Notify(ctx, "infracost/loginComplete", nil); err != nil {
+			slog.Warn("login: failed to notify loginComplete", "error", err)
+		}
+	}
 
 	if s.workspaceRoot != "" {
 		go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
