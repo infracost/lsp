@@ -59,6 +59,11 @@ type Server struct {
 	// scanningProjects tracks which projects are currently being scanned.
 	scanningProjects map[string]struct{}
 
+	// dirtyProjects holds the URI of a save that arrived while the project was
+	// already scanning. After the current scan finishes, a new scan is triggered
+	// for any dirty project so the latest file state is always reflected.
+	dirtyProjects map[string]string
+
 	// scanCancels holds cancel functions for in-flight scans, keyed by project name.
 	scanCancels map[string]context.CancelFunc
 
@@ -91,6 +96,7 @@ func NewServer(s *scanner.Scanner, eventsClient events.Client, ts *api.TokenSour
 		projectResults:       make(map[string]*scanner.ScanResult),
 		filesWithDiagnostics: make(map[string]struct{}),
 		scanningProjects:     make(map[string]struct{}),
+		dirtyProjects:        make(map[string]string),
 		scanCancels:          make(map[string]context.CancelFunc),
 		scanTimers:           make(map[string]*time.Timer),
 	}
@@ -387,12 +393,12 @@ func (s *Server) loadConfigAndScan() {
 		progress.Report(ctx, fmt.Sprintf("Scanning %s...", project.Name), pct)
 
 		s.setScanningProject(project.Name, true)
-
-		start := time.Now()
-		result, err := s.scanner.ScanProject(ctx, s.workspaceRoot, cfg, project)
-		elapsed := time.Since(start)
-
-		s.setScanningProject(project.Name, false)
+		result, elapsed, err := func() (*scanner.ScanResult, time.Duration, error) {
+			defer s.setScanningProject(project.Name, false)
+			start := time.Now()
+			r, e := s.scanner.ScanProject(ctx, s.workspaceRoot, cfg, project)
+			return r, time.Since(start), e
+		}()
 
 		if err != nil {
 			slog.Error("loadConfigAndScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
@@ -418,6 +424,11 @@ func (s *Server) loadConfigAndScan() {
 		s.refreshInlayHints()
 		s.publishDiagnostics()
 		s.sendScanComplete()
+
+		if dirtyURI, ok := s.popDirtyProject(project.Name); ok {
+			slog.Debug("loadConfigAndScan: project was dirtied during scan, scheduling re-scan", "project", project.Name)
+			s.scheduleAnalyze(dirtyURI)
+		}
 	}
 
 	progress.End(ctx, fmt.Sprintf("Scan complete — %d resources, %d violations, %d tag issues", totalResources, totalViolations, totalTagViolations))
@@ -524,11 +535,30 @@ func (s *Server) isScanning() bool {
 	return len(s.scanningProjects) > 0
 }
 
-func (s *Server) isScanningProject(name string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, ok := s.scanningProjects[name]
-	return ok
+// markProjectDirtyIfScanning atomically checks whether the project is scanning
+// and, if so, marks it dirty. Returns true if the project was scanning.
+// This avoids the TOCTOU race between a separate isScanningProject check and
+// markProjectDirty call.
+func (s *Server) markProjectDirtyIfScanning(name, uri string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.scanningProjects[name]; !ok {
+		return false
+	}
+	s.dirtyProjects[name] = uri
+	return true
+}
+
+// popDirtyProject returns the pending URI for the project and clears the flag.
+// Returns "", false if the project is not dirty.
+func (s *Server) popDirtyProject(name string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	uri, ok := s.dirtyProjects[name]
+	if ok {
+		delete(s.dirtyProjects, name)
+	}
+	return uri, ok
 }
 
 // resetState cancels all in-flight scans, stops debounce timers, and clears
@@ -546,6 +576,7 @@ func (s *Server) resetState() {
 	s.config = nil
 	s.projectResults = make(map[string]*scanner.ScanResult)
 	s.scanningProjects = make(map[string]struct{})
+	s.dirtyProjects = make(map[string]string)
 	s.filesWithDiagnostics = make(map[string]struct{})
 	s.mu.Unlock()
 }
