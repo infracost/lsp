@@ -151,7 +151,10 @@ func main() {
 	srv.HandleMethod("infracost/fileSummary", lspServer.HandleFileSummary)
 	srv.HandleMethod("infracost/status", lspServer.HandleStatus)
 	srv.HandleMethod("infracost/login", lspServer.HandleLogin)
+	srv.HandleMethod("infracost/logout", lspServer.HandleLogout)
 	srv.HandleMethod("infracost/update", lspServer.HandleUpdate)
+	srv.HandleMethod("infracost/orgs", lspServer.HandleOrgs)
+	srv.HandleMethod("infracost/selectOrg", lspServer.HandleSelectOrg)
 
 	slog.Info("listening on stdio")
 	if err := srv.Run(context.Background(), server.RunStdio()); err != nil {
