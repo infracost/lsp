@@ -504,7 +504,7 @@ func (s *Server) getMergedResult() *scanner.ScanResult {
 	defer s.mu.RUnlock()
 
 	merged := &scanner.ScanResult{}
-	var projectCosts []goprotoevent.ProjectCostInfo
+	projectCosts := make([]goprotoevent.ProjectCostInfo, 0, len(s.projectResults))
 
 	for name, r := range s.projectResults {
 		if r == nil {
