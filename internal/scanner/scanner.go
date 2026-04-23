@@ -29,6 +29,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/infracost/proto/gen/go/infracost/usage"
+
 	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/dashboard"
 	"github.com/infracost/lsp/internal/plugins/parser"
@@ -52,6 +54,9 @@ type Scanner struct {
 	tagPolicies        []*event.TagPolicy
 	finopsPolicies     []*event.FinopsPolicySettings
 	guardrails         []*event.Guardrail
+	productionFilters  []*event.ProductionFilter
+	usageDefaults      *event.UsageDefaults
+	repositoryName     string
 	runParamsOrgID     string
 	runParamsFetchedAt time.Time
 	runParamsTTL       time.Duration
@@ -145,6 +150,27 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 		s.guardrails = append(s.guardrails, &g)
 	}
 
+	s.productionFilters = nil
+	for _, raw := range params.ProductionFilters {
+		var pf event.ProductionFilter
+		if err := protojson.Unmarshal(raw, &pf); err != nil {
+			slog.Warn("fetchRunParams: failed to unmarshal production filter", "error", err)
+			continue
+		}
+		s.productionFilters = append(s.productionFilters, &pf)
+	}
+	s.repositoryName = params.RepositoryName
+
+	s.usageDefaults = nil
+	if len(params.UsageDefaults) > 0 {
+		var ud event.UsageDefaults
+		if err := protojson.Unmarshal(params.UsageDefaults, &ud); err != nil {
+			slog.Warn("fetchRunParams: failed to unmarshal usage defaults", "error", err)
+		} else {
+			s.usageDefaults = &ud
+		}
+	}
+
 	s.runParamsOrgID = params.OrganizationID
 	s.runParamsFetchedAt = time.Now()
 
@@ -207,6 +233,29 @@ func (s *Scanner) Scan(ctx context.Context, dir string) (*ScanResult, error) {
 	return s.ScanAll(ctx, absDir, cfg)
 }
 
+// loadRepoUsage loads repo-level usage: API defaults merged with the repo's usage YAML file.
+func (s *Scanner) loadRepoUsage(rootDir string, cfg *repoconfig.Config) *usage.Usage {
+	repoUsage := loadUsageDefaults(s.usageDefaults, "")
+	if cfg.UsageFilePath != "" {
+		usagePath := filepath.Join(rootDir, cfg.UsageFilePath)
+		if stat, err := os.Stat(usagePath); err == nil && !stat.IsDir() {
+			f, err := os.Open(usagePath) // #nosec G304
+			if err != nil {
+				slog.Warn("loadRepoUsage: failed to open usage file", "path", usagePath, "error", err)
+				return repoUsage
+			}
+			u, err := loadUsageData(f, repoUsage)
+			_ = f.Close()
+			if err != nil {
+				slog.Warn("loadRepoUsage: failed to load usage file", "path", usagePath, "error", err)
+				return repoUsage
+			}
+			repoUsage = u
+		}
+	}
+	return repoUsage
+}
+
 // ScanAll scans all projects in the given config.
 func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.Config) (*ScanResult, error) {
 	result := &ScanResult{}
@@ -214,8 +263,11 @@ func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.C
 	orgID := s.fetchRunParams(ctx, rootDir)
 	slog.Debug("scanAll: starting", "projects", len(cfg.Projects), "currency", cfg.Currency, "org_id", orgID)
 
+	repoUsage := s.loadRepoUsage(rootDir, cfg)
+	branchName := vcs.GetCurrentBranch(rootDir)
+
 	for _, project := range cfg.Projects {
-		r, err := s.scanProject(ctx, rootDir, cfg, project, orgID)
+		r, err := s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName)
 		if err != nil {
 			slog.Error("scanAll: project failed", "name", project.Name, "error", err)
 			result.Errors = append(result.Errors, fmt.Sprintf("project %s: %v", project.Name, err))
@@ -235,10 +287,12 @@ func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.C
 // ScanProject scans a single project and returns its results.
 func (s *Scanner) ScanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project) (*ScanResult, error) {
 	orgID := s.fetchRunParams(ctx, rootDir)
-	return s.scanProject(ctx, rootDir, cfg, project, orgID)
+	repoUsage := s.loadRepoUsage(rootDir, cfg)
+	branchName := vcs.GetCurrentBranch(rootDir)
+	return s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName)
 }
 
-func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project, orgID string) (*ScanResult, error) {
+func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project, orgID string, repoUsage *usage.Usage, branchName string) (*ScanResult, error) {
 	projectPath := filepath.Clean(filepath.Join(rootDir, project.Path))
 	slog.Debug("scanProject: starting", "name", project.Name, "path", projectPath)
 
@@ -305,15 +359,44 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		return nil, fmt.Errorf("authentication: %w", err)
 	}
 
+	isProduction := evaluateProductionFilters(s.productionFilters, s.repositoryName, branchName, project.Name)
+
+	// Load project-level usage (overlay on top of repo-level).
+	projectUsage := repoUsage
+	if project.UsageFile != "" && project.UsageFile != cfg.UsageFilePath {
+		usagePath := filepath.Join(rootDir, project.UsageFile)
+		if stat, err := os.Stat(usagePath); err == nil && !stat.IsDir() {
+			f, err := os.Open(usagePath) // #nosec G304
+			if err != nil {
+				slog.Warn("scanProject: failed to open project usage file", "path", usagePath, "error", err)
+			} else {
+				usageDefaults := loadUsageDefaults(s.usageDefaults, project.Name)
+				u, err := loadUsageData(f, usageDefaults)
+				_ = f.Close()
+				if err == nil {
+					projectUsage = u
+				} else {
+					slog.Warn("scanProject: failed to load project usage file", "path", usagePath, "error", err)
+				}
+			}
+		}
+	}
+
 	input := &provider.Input{
 		ParseResult:  parseResp,
 		AbsolutePath: projectPath,
+		Usage:        projectUsage,
 		ProjectInfo: &provider.ProjectInfo{
-			Name: project.Name,
+			Name:         project.Name,
+			BranchName:   branchName,
+			Workspace:    project.Terraform.Workspace,
+			IsProduction: isProduction,
 		},
 		Features: &provider.Features{
-			EnablePriceLookups:   true,
-			EnableFinopsPolicies: true,
+			EnablePriceLookups:         true,
+			EnableRecommendations:      true,
+			EnableFinopsPolicies:       true,
+			EnableEnvironmentalMetrics: true,
 		},
 		FinopsPolicyConfig: &provider.FinopsPolicyConfiguration{
 			Policies: s.finopsPolicies,

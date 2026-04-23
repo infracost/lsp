@@ -68,11 +68,13 @@ func (c *Client) FetchCurrentUser(ctx context.Context) (CurrentUser, error) {
 }
 
 type RunParameters struct {
-	OrganizationID string            `json:"organizationId"`
-	RepositoryName string            `json:"repositoryName"`
-	TagPolicies    []json.RawMessage `json:"tagPolicies"`
-	FinopsPolicies []json.RawMessage `json:"finopsPolicies"`
-	Guardrails     []json.RawMessage `json:"guardrails"`
+	OrganizationID    string            `json:"organizationId"`
+	RepositoryName    string            `json:"repositoryName"`
+	UsageDefaults     json.RawMessage   `json:"usageDefaults"`
+	ProductionFilters []json.RawMessage `json:"productionFilters"`
+	TagPolicies       []json.RawMessage `json:"tagPolicies"`
+	FinopsPolicies    []json.RawMessage `json:"finopsPolicies"`
+	Guardrails        []json.RawMessage `json:"guardrails"`
 }
 
 func (c *Client) RunParameters(ctx context.Context, organizationID, repoURL, branchName string) (RunParameters, error) {
@@ -80,6 +82,8 @@ func (c *Client) RunParameters(ctx context.Context, organizationID, repoURL, bra
   runParameters(repoUrl: $repoUrl, branchName: $branchName) {
     organizationId
     repositoryName
+    usageDefaults
+    productionFilters
     tagPolicies
     finopsPolicies
     guardrails
