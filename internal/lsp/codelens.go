@@ -51,18 +51,19 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 			End:   lsp.Position{Line: line, Character: 0},
 		}
 
-		// Cost lens.
-		var title string
+		// Cost lens — omitted when no pricing data is available.
 		switch {
 		case !r.IsSupported:
-			title = "Not supported"
-		default:
-			title = scanner.FormatCost(r.MonthlyCost) + "/mo"
+			lenses = append(lenses, lsp.CodeLens{
+				Range:   rng,
+				Command: revealResourceCommand("Not supported", uri, line),
+			})
+		case r.IsFree || (r.MonthlyCost != nil && !r.MonthlyCost.IsZero()):
+			lenses = append(lenses, lsp.CodeLens{
+				Range:   rng,
+				Command: revealResourceCommand(scanner.FormatCost(r.MonthlyCost)+"/mo", uri, line),
+			})
 		}
-		lenses = append(lenses, lsp.CodeLens{
-			Range:   rng,
-			Command: revealResourceCommand(title, uri, line),
-		})
 
 		// FinOps violations lens.
 		if vs := violationsByAddr[r.Name]; len(vs) > 0 {

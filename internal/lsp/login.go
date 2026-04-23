@@ -86,6 +86,10 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	slog.Info("login: device flow complete")
 	s.tokenSource.Set(tokenSource)
 
+	// Fetch the user's profile and save it to user.json so that infracost/orgs
+	// can return real org data without requiring a separate CLI login.
+	s.refreshUserCache(ctx)
+
 	if s.client != nil {
 		if err := s.client.Notify(ctx, "infracost/loginComplete", nil); err != nil {
 			slog.Warn("login: failed to notify loginComplete", "error", err)

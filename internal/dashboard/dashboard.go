@@ -23,11 +23,56 @@ type Client struct {
 	endpoint string
 }
 
+// CurrentUserOrg is an organization the current user belongs to.
+type CurrentUserOrg struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// CurrentUser holds the authenticated user's identity and org memberships.
+type CurrentUser struct {
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Email         string           `json:"email"`
+	Organizations []CurrentUserOrg `json:"organizations"`
+}
+
+// FetchCurrentUser fetches the authenticated user's profile from the API.
+func (c *Client) FetchCurrentUser(ctx context.Context) (CurrentUser, error) {
+	const query = `{
+  currentUser {
+    id
+    name
+    email
+    organizations { id name slug }
+  }
+}`
+
+	type response struct {
+		CurrentUser CurrentUser `json:"currentUser"`
+	}
+
+	r, err := graphqlQuery[response](ctx, c.client, fmt.Sprintf("%s/graphql", c.endpoint), query, nil)
+	if err != nil {
+		return CurrentUser{}, err
+	}
+	if len(r.Errors) > 0 {
+		var errs []string
+		for _, e := range r.Errors {
+			errs = append(errs, e.Message)
+		}
+		return CurrentUser{}, errors.New(strings.Join(errs, "; "))
+	}
+	return r.Data.CurrentUser, nil
+}
+
 type RunParameters struct {
 	OrganizationID string            `json:"organizationId"`
 	RepositoryName string            `json:"repositoryName"`
 	TagPolicies    []json.RawMessage `json:"tagPolicies"`
 	FinopsPolicies []json.RawMessage `json:"finopsPolicies"`
+	Guardrails     []json.RawMessage `json:"guardrails"`
 }
 
 func (c *Client) RunParameters(ctx context.Context, organizationID, repoURL, branchName string) (RunParameters, error) {
@@ -37,6 +82,7 @@ func (c *Client) RunParameters(ctx context.Context, organizationID, repoURL, bra
     repositoryName
     tagPolicies
     finopsPolicies
+    guardrails
   }
 }`
 
