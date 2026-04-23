@@ -8,14 +8,31 @@ import (
 
 func TestTopLevelModulePrefix(t *testing.T) {
 	tests := []struct {
-		name string
-		want string
+		name            string
+		resourceAddress string
+		want            string
 	}{
-		{"aws_instance.foo", ""},
-		{"module.dashboard.aws_rds_cluster_instance.foo", "module.dashboard"},
-		{"module.base.module.eks.aws_eks_cluster.this", "module.base"},
-		{"module.dashboard", ""},
-		{"", ""},
+		{
+			"aws_instance.foo",
+			"aws_instance.foo",
+			"",
+		},
+		{
+			"module.dashboard.aws_rds_cluster_instance.foo",
+			"module.dashboard.aws_rds_cluster_instance.foo",
+			"module.dashboard",
+		},
+		{
+			"module.base.module.eks.aws_eks_cluster.this",
+			"module.base.module.eks.aws_eks_cluster.this",
+			"module.base",
+		},
+		{
+			"module.dashboard",
+			"module.dashboard",
+			"",
+		},
+		{"no input", "", ""},
 	}
 
 	for _, tt := range tests {

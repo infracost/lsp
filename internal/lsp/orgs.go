@@ -9,6 +9,7 @@ import (
 
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/infracost/cli/pkg/environment"
+	"github.com/infracost/lsp/internal/dashboard"
 )
 
 // OrgEntry represents a single organization.
@@ -20,8 +21,9 @@ type OrgEntry struct {
 
 // OrgInfo is the response type for infracost/orgs and infracost/selectOrg.
 type OrgInfo struct {
-	Organizations []OrgEntry `json:"organizations"`
-	SelectedOrgID string     `json:"selectedOrgId"`
+	Organizations        []OrgEntry `json:"organizations"`
+	SelectedOrgID        string     `json:"selectedOrgId"`
+	HasExplicitSelection bool       `json:"hasExplicitSelection"`
 }
 
 // HandleOrgs returns the list of organizations the user belongs to and the
@@ -86,7 +88,7 @@ func (s *Server) loadOrgInfo() (*OrgInfo, error) {
 		return nil, fmt.Errorf("orgs: loading user cache: %w", err)
 	}
 	if uc == nil || len(uc.Organizations) == 0 {
-		return &OrgInfo{}, nil
+		return &OrgInfo{Organizations: []OrgEntry{}}, nil
 	}
 
 	orgs := make([]OrgEntry, len(uc.Organizations))
@@ -95,6 +97,7 @@ func (s *Server) loadOrgInfo() (*OrgInfo, error) {
 	}
 
 	selectedID := uc.SelectedOrgID
+	hasExplicit := selectedID != ""
 
 	s.mu.RLock()
 	root := s.workspaceRoot
@@ -108,6 +111,7 @@ func (s *Server) loadOrgInfo() (*OrgInfo, error) {
 			for _, o := range uc.Organizations {
 				if o.Slug == localSlug {
 					selectedID = o.ID
+					hasExplicit = true
 					break
 				}
 			}
@@ -119,9 +123,48 @@ func (s *Server) loadOrgInfo() (*OrgInfo, error) {
 	}
 
 	return &OrgInfo{
-		Organizations: orgs,
-		SelectedOrgID: selectedID,
+		Organizations:        orgs,
+		SelectedOrgID:        selectedID,
+		HasExplicitSelection: hasExplicit,
 	}, nil
+}
+
+// refreshUserCache fetches the current user's profile from the API and writes
+// it to user.json, called after a successful device auth flow.
+func (s *Server) refreshUserCache(ctx context.Context) {
+	dc := dashboard.NewClient(s.scanner.HTTPClient, s.scanner.DashboardEndpoint)
+	user, err := dc.FetchCurrentUser(ctx)
+	if err != nil {
+		slog.Warn("login: failed to fetch user profile", "error", err)
+		return
+	}
+
+	orgs := make([]auth.CachedOrganization, len(user.Organizations))
+	for i, o := range user.Organizations {
+		orgs[i] = auth.CachedOrganization{ID: o.ID, Name: o.Name, Slug: o.Slug}
+	}
+
+	authCfg := newAuthConfig()
+	existing, err := authCfg.LoadUserCache()
+	if err != nil {
+		slog.Warn("login: failed to load existing user cache", "error", err)
+	}
+
+	uc := &auth.UserCache{
+		ID:            user.ID,
+		Name:          user.Name,
+		Email:         user.Email,
+		Organizations: orgs,
+	}
+	if existing != nil {
+		uc.SelectedOrgID = existing.SelectedOrgID
+	}
+
+	if err := authCfg.SaveUserCache(uc); err != nil {
+		slog.Warn("login: failed to save user cache", "error", err)
+		return
+	}
+	slog.Info("login: user cache refreshed", "orgs", len(orgs))
 }
 
 // newAuthConfig returns an auth.Config with default paths populated.

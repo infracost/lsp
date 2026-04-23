@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	goprotoevent "github.com/infracost/go-proto/pkg/event"
 	"github.com/infracost/go-proto/pkg/rat"
 	"github.com/infracost/proto/gen/go/infracost/provider"
 
@@ -86,11 +87,12 @@ type InvalidTagResult struct {
 
 // ScanResult holds all results from scanning a directory.
 type ScanResult struct {
-	Resources     []ResourceResult
-	ModuleCosts   []ModuleCost
-	Violations    []FinopsViolation
-	TagViolations []TagViolation
-	Errors        []string
+	Resources        []ResourceResult
+	ModuleCosts      []ModuleCost
+	Violations       []FinopsViolation
+	TagViolations    []TagViolation
+	GuardrailResults []goprotoevent.GuardrailResult
+	Errors           []string
 }
 
 var hoursInMonth = rat.New(730)

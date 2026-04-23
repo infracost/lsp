@@ -51,6 +51,7 @@ type Scanner struct {
 
 	tagPolicies        []*event.TagPolicy
 	finopsPolicies     []*event.FinopsPolicySettings
+	guardrails         []*event.Guardrail
 	runParamsOrgID     string
 	runParamsFetchedAt time.Time
 	runParamsTTL       time.Duration
@@ -133,6 +134,17 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 		s.finopsPolicies = append(s.finopsPolicies, &fp)
 	}
 
+	s.guardrails = nil
+	for i, raw := range params.Guardrails {
+		slog.Debug("fetchRunParams: raw guardrail", "index", i, "json", string(raw))
+		var g event.Guardrail
+		if err := protojson.Unmarshal(raw, &g); err != nil {
+			slog.Warn("fetchRunParams: failed to unmarshal guardrail", "error", err)
+			continue
+		}
+		s.guardrails = append(s.guardrails, &g)
+	}
+
 	s.runParamsOrgID = params.OrganizationID
 	s.runParamsFetchedAt = time.Now()
 
@@ -142,6 +154,27 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 
 	slog.Debug("fetchRunParams: resolved", "org_id", params.OrganizationID, "tag_policies", len(s.tagPolicies))
 	return params.OrganizationID
+}
+
+// EvaluateGuardrails evaluates the cached guardrail configs against the
+// provided per-project costs and returns one result per guardrail.
+func (s *Scanner) EvaluateGuardrails(projects []goprotoevent.ProjectCostInfo) []goprotoevent.GuardrailResult {
+	if len(s.guardrails) == 0 {
+		return nil
+	}
+
+	headTotal := rat.Zero
+	pastTotal := rat.Zero
+	for _, p := range projects {
+		if p.TotalMonthlyCost != nil {
+			headTotal = headTotal.Add(p.TotalMonthlyCost)
+		}
+		if p.PastTotalMonthlyCost != nil {
+			pastTotal = pastTotal.Add(p.PastTotalMonthlyCost)
+		}
+	}
+
+	return goprotoevent.Guardrails(s.guardrails).Evaluate(headTotal, pastTotal, projects)
 }
 
 // Close kills all persistent plugin subprocesses.

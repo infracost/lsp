@@ -155,6 +155,7 @@ func main() {
 	srv.HandleMethod("infracost/update", lspServer.HandleUpdate)
 	srv.HandleMethod("infracost/orgs", lspServer.HandleOrgs)
 	srv.HandleMethod("infracost/selectOrg", lspServer.HandleSelectOrg)
+	srv.HandleMethod("infracost/workspaceSummary", lspServer.HandleWorkspaceSummary)
 
 	slog.Info("listening on stdio")
 	if err := srv.Run(context.Background(), server.RunStdio()); err != nil {

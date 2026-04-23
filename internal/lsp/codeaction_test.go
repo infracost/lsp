@@ -101,6 +101,9 @@ func TestCodeAction(t *testing.T) {
 
 	s := NewServer(nil, nil, api.NewTokenSource(nil))
 	s.projectResults["test"] = &scanner.ScanResult{
+		Resources: []scanner.ResourceResult{
+			{Name: "aws_instance.web", MonthlyCost: mustRat("30.00")},
+		},
 		Violations: []scanner.FinopsViolation{
 			{
 				PolicySlug:     "aws-use-graviton-ec2-instance",

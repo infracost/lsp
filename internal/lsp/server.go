@@ -18,6 +18,8 @@ import (
 	"github.com/owenrumney/go-lsp/server"
 
 	repoconfig "github.com/infracost/config"
+	goprotoevent "github.com/infracost/go-proto/pkg/event"
+	"github.com/infracost/go-proto/pkg/rat"
 
 	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/events"
@@ -135,6 +137,14 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 
 	if s.scanner != nil {
 		s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
+	}
+
+	// Pre-seed the org ID on the API transport from the locally stored org
+	// selection so the first RunParameters call uses the right org.
+	if s.workspaceRoot != "" && s.scanner != nil && s.scanner.OnOrgID != nil {
+		if orgInfo, err := s.loadOrgInfo(); err == nil && orgInfo.SelectedOrgID != "" {
+			s.scanner.OnOrgID(orgInfo.SelectedOrgID)
+		}
 	}
 
 	go s.checkForUpdate() //nolint:gosec // G118: intentionally outlives request context
@@ -494,7 +504,9 @@ func (s *Server) getMergedResult() *scanner.ScanResult {
 	defer s.mu.RUnlock()
 
 	merged := &scanner.ScanResult{}
-	for _, r := range s.projectResults {
+	projectCosts := make([]goprotoevent.ProjectCostInfo, 0, len(s.projectResults))
+
+	for name, r := range s.projectResults {
 		if r == nil {
 			continue
 		}
@@ -503,7 +515,24 @@ func (s *Server) getMergedResult() *scanner.ScanResult {
 		merged.Violations = append(merged.Violations, r.Violations...)
 		merged.TagViolations = append(merged.TagViolations, r.TagViolations...)
 		merged.Errors = append(merged.Errors, r.Errors...)
+
+		total := rat.Zero
+		for _, res := range r.Resources {
+			if res.MonthlyCost != nil {
+				total = total.Add(res.MonthlyCost)
+			}
+		}
+		projectCosts = append(projectCosts, goprotoevent.ProjectCostInfo{
+			ProjectName:          name,
+			TotalMonthlyCost:     total,
+			PastTotalMonthlyCost: rat.Zero,
+		})
 	}
+
+	if s.scanner != nil {
+		merged.GuardrailResults = s.scanner.EvaluateGuardrails(projectCosts)
+	}
+
 	return merged
 }
 

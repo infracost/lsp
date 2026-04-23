@@ -141,6 +141,15 @@ func TestHandleStatus(t *testing.T) {
 				TagIssueCount:  1,
 			},
 		},
+		{
+			name:    "no guardrails configured yields nil triggered guardrails",
+			results: map[string]*scanner.ScanResult{"proj": {Resources: []scanner.ResourceResult{{Name: "r1"}}}},
+			want: StatusResult{
+				Version:             version.Version,
+				ResourceCount:       1,
+				TriggeredGuardrails: nil,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -175,6 +184,7 @@ func TestHandleStatus(t *testing.T) {
 			assert.Equal(t, tt.want.ResourceCount, result.ResourceCount, "resourceCount")
 			assert.Equal(t, tt.want.ViolationCount, result.ViolationCount, "violationCount")
 			assert.Equal(t, tt.want.TagIssueCount, result.TagIssueCount, "tagIssueCount")
+			assert.Equal(t, tt.want.TriggeredGuardrails, result.TriggeredGuardrails, "triggeredGuardrails")
 		})
 	}
 }

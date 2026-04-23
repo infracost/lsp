@@ -124,7 +124,7 @@ func (s *Server) CodeAction(_ context.Context, params *lsp.CodeActionParams) ([]
 		if fix != nil {
 			if edit := buildAttributeEdit(uri, *fix, v); edit != nil {
 				title := v.Message
-				if v.MonthlySavings != nil && !v.MonthlySavings.IsZero() {
+				if v.MonthlySavings != nil && !v.MonthlySavings.IsZero() && s.resourceHasCost(v.Address) {
 					title += fmt.Sprintf(" — saves %s/mo", scanner.FormatCost(v.MonthlySavings))
 				}
 
@@ -448,6 +448,17 @@ func filterDiagnosticsToRange(diagnostics []lsp.Diagnostic, r lsp.Range) []lsp.D
 		return matched
 	}
 	return diagnostics
+}
+
+// resourceHasCost returns true if the resource with the given address has a
+// non-zero monthly cost. Used to suppress savings labels for free/unpriced resources.
+func (s *Server) resourceHasCost(address string) bool {
+	for _, r := range s.getMergedResult().Resources {
+		if r.Name == address {
+			return r.MonthlyCost != nil && !r.MonthlyCost.IsZero()
+		}
+	}
+	return false
 }
 
 // diagnosticPolicySlug extracts the policy slug from a diagnostic's Code field.
