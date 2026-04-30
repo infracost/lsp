@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/infracost/cli/pkg/environment"
+	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/dashboard"
 )
 
@@ -26,12 +28,27 @@ type OrgInfo struct {
 	HasExplicitSelection bool       `json:"hasExplicitSelection"`
 }
 
+type orgsParams struct {
+	Refresh bool `json:"refresh"`
+}
+
 // HandleOrgs returns the list of organizations the user belongs to and the
 // currently active org, resolved in priority order:
 //  1. .infracost/org in the workspace root (repo-scoped)
 //  2. selectedOrgId in user.json (global)
 //  3. first org in the list
-func (s *Server) HandleOrgs(_ context.Context, _ json.RawMessage) (any, error) {
+func (s *Server) HandleOrgs(ctx context.Context, params json.RawMessage) (any, error) {
+	var p orgsParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("orgs: invalid params: %w", err)
+		}
+	}
+	if p.Refresh {
+		if err := s.refreshUserCache(ctx); err != nil {
+			return nil, fmt.Errorf("orgs: refreshing user cache: %w", err)
+		}
+	}
 	return s.loadOrgInfo()
 }
 
@@ -97,6 +114,9 @@ func (s *Server) loadOrgInfo() (*OrgInfo, error) {
 	}
 
 	selectedID := uc.SelectedOrgID
+	if selectedID != "" && !cachedOrgIDExists(uc.Organizations, selectedID) {
+		selectedID = ""
+	}
 	hasExplicit := selectedID != ""
 
 	s.mu.RLock()
@@ -131,12 +151,19 @@ func (s *Server) loadOrgInfo() (*OrgInfo, error) {
 
 // refreshUserCache fetches the current user's profile from the API and writes
 // it to user.json, called after a successful device auth flow.
-func (s *Server) refreshUserCache(ctx context.Context) {
-	dc := dashboard.NewClient(s.scanner.HTTPClient, s.scanner.DashboardEndpoint)
+func (s *Server) refreshUserCache(ctx context.Context) error {
+	if s.scanner == nil {
+		return fmt.Errorf("scanner not configured")
+	}
+	if s.scanner.DashboardEndpoint == "" {
+		return fmt.Errorf("dashboard endpoint not configured")
+	}
+
+	httpClient := s.unscopedRefreshHTTPClient()
+	dc := dashboard.NewClient(httpClient, s.scanner.DashboardEndpoint)
 	user, err := dc.FetchCurrentUser(ctx)
 	if err != nil {
-		slog.Warn("login: failed to fetch user profile", "error", err)
-		return
+		return fmt.Errorf("fetching user profile: %w", err)
 	}
 
 	orgs := make([]auth.CachedOrganization, len(user.Organizations))
@@ -147,7 +174,7 @@ func (s *Server) refreshUserCache(ctx context.Context) {
 	authCfg := newAuthConfig()
 	existing, err := authCfg.LoadUserCache()
 	if err != nil {
-		slog.Warn("login: failed to load existing user cache", "error", err)
+		return fmt.Errorf("loading existing user cache: %w", err)
 	}
 
 	uc := &auth.UserCache{
@@ -161,10 +188,30 @@ func (s *Server) refreshUserCache(ctx context.Context) {
 	}
 
 	if err := authCfg.SaveUserCache(uc); err != nil {
-		slog.Warn("login: failed to save user cache", "error", err)
-		return
+		return fmt.Errorf("saving user cache: %w", err)
 	}
 	slog.Info("login: user cache refreshed", "orgs", len(orgs))
+	return nil
+}
+
+func (s *Server) unscopedRefreshHTTPClient() *http.Client {
+	if s.tokenSource != nil && s.tokenSource.Valid() {
+		httpClient, _ := api.NewHTTPClient(s.tokenSource)
+		return httpClient
+	}
+	if s.scanner != nil && s.scanner.HTTPClient != nil {
+		return s.scanner.HTTPClient
+	}
+	return http.DefaultClient
+}
+
+func cachedOrgIDExists(orgs []auth.CachedOrganization, id string) bool {
+	for _, o := range orgs {
+		if o.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // newAuthConfig returns an auth.Config with default paths populated.
