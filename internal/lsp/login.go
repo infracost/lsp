@@ -88,7 +88,9 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 
 	// Fetch the user's profile and save it to user.json so that infracost/orgs
 	// can return real org data without requiring a separate CLI login.
-	s.refreshUserCache(ctx)
+	if err := s.refreshUserCache(ctx); err != nil {
+		slog.Warn("login: failed to refresh user cache", "error", err)
+	}
 
 	if s.client != nil {
 		if err := s.client.Notify(ctx, "infracost/loginComplete", nil); err != nil {

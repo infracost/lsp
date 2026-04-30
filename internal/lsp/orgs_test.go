@@ -3,12 +3,15 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/scanner"
@@ -82,6 +85,24 @@ func TestHandleOrgs_SelectedOrgFromCache(t *testing.T) {
 	assert.Equal(t, "org-2", info.SelectedOrgID)
 }
 
+func TestHandleOrgs_StaleSelectedOrgFallsBackToFirstOrg(t *testing.T) {
+	writeUserCache(t, &auth.UserCache{
+		Organizations: []auth.CachedOrganization{
+			{ID: "org-1", Name: "Acme", Slug: "acme"},
+		},
+		SelectedOrgID: "org-removed",
+	})
+	s := newTestServer(t)
+
+	got, err := s.HandleOrgs(context.Background(), nil)
+	require.NoError(t, err)
+
+	info, ok := got.(*OrgInfo)
+	require.True(t, ok)
+	assert.Equal(t, "org-1", info.SelectedOrgID)
+	assert.False(t, info.HasExplicitSelection)
+}
+
 func TestHandleOrgs_LocalOrgOverridesCache(t *testing.T) {
 	root := t.TempDir()
 	writeUserCache(t, &auth.UserCache{
@@ -105,6 +126,75 @@ func TestHandleOrgs_LocalOrgOverridesCache(t *testing.T) {
 	require.True(t, ok)
 	// Local file takes priority over selectedOrgId in user cache.
 	assert.Equal(t, "org-1", info.SelectedOrgID)
+}
+
+func TestHandleOrgs_StaleLocalOrgFallsBackToFirstOrg(t *testing.T) {
+	root := t.TempDir()
+	writeUserCache(t, &auth.UserCache{
+		Organizations: []auth.CachedOrganization{
+			{ID: "org-1", Name: "Acme", Slug: "acme"},
+		},
+	})
+	require.NoError(t, auth.WriteLocalOrg(root, "removed"))
+
+	s := newTestServer(t)
+	s.workspaceRoot = root
+
+	got, err := s.HandleOrgs(context.Background(), nil)
+	require.NoError(t, err)
+
+	info, ok := got.(*OrgInfo)
+	require.True(t, ok)
+	assert.Equal(t, "org-1", info.SelectedOrgID)
+	assert.False(t, info.HasExplicitSelection)
+}
+
+func TestHandleOrgs_RefreshUpdatesUserCache(t *testing.T) {
+	writeUserCache(t, &auth.UserCache{
+		Organizations: []auth.CachedOrganization{
+			{ID: "org-removed", Name: "Removed", Slug: "removed"},
+		},
+		SelectedOrgID: "org-removed",
+	})
+	dashboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/graphql", r.URL.Path)
+		assert.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("x-infracost-org-id"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"currentUser": {
+					"id": "user-1",
+					"name": "Test User",
+					"email": "test@example.com",
+					"organizations": [
+						{"id": "org-1", "name": "Acme", "slug": "acme"}
+					]
+				}
+			}
+		}`))
+	}))
+	defer dashboardServer.Close()
+
+	s := NewServer(&scanner.Scanner{
+		DashboardEndpoint: dashboardServer.URL,
+	}, nil, api.NewTokenSource(oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: "token",
+		TokenType:   "Bearer",
+	})))
+
+	params, err := json.Marshal(orgsParams{Refresh: true})
+	require.NoError(t, err)
+
+	got, err := s.HandleOrgs(context.Background(), params)
+	require.NoError(t, err)
+
+	info, ok := got.(*OrgInfo)
+	require.True(t, ok)
+	require.Len(t, info.Organizations, 1)
+	assert.Equal(t, "org-1", info.Organizations[0].ID)
+	assert.Equal(t, "org-1", info.SelectedOrgID)
+	assert.False(t, info.HasExplicitSelection)
 }
 
 func TestHandleSelectOrg(t *testing.T) {
