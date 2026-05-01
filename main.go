@@ -101,13 +101,12 @@ func main() {
 		"pricing_endpoint", cfg.PricingEndpoint,
 		"has_token_source", cfg.TokenSource != nil,
 		"dashboard_endpoint", cfg.DashboardEndpoint,
-		"hclog_level", cfg.LogLevel.String(),
+		"slog_level", cfg.SlogLevel.String(),
 	)
 
 	s := &scanner.Scanner{
 		Parser:            &parserClient,
 		Provider:          &providerClient,
-		LogLevel:          cfg.LogLevel,
 		Currency:          cfg.Currency,
 		PricingEndpoint:   cfg.PricingEndpoint,
 		DashboardEndpoint: cfg.DashboardEndpoint,

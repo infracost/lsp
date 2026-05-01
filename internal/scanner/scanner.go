@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	repoconfig "github.com/infracost/config"
 	"github.com/infracost/go-proto/pkg/diagnostic"
 	goprotoevent "github.com/infracost/go-proto/pkg/event"
@@ -43,7 +42,6 @@ type Scanner struct {
 	Parser            *parser.PluginClient
 	Provider          *providers.PluginClient
 	EnsureProvider    func(provider.Provider) error
-	LogLevel          hclog.Level
 	Currency          string
 	PricingEndpoint   string
 	DashboardEndpoint string
