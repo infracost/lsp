@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -132,17 +131,16 @@ func main() {
 
 	lspServer := lsp.NewServer(s, eventsClient, tokenSource)
 
-	var opts []server.Option
+	// Always capture in-memory LSP traffic and logs so infracost/exportTrace
+	// can produce a support bundle on demand. Capture has no port to bind, so
+	// it's safe in production. The HTTP debug UI stays opt-in via env var.
+	opts := []server.Option{
+		server.WithDebugCapture(),
+		server.WithLogger(slog.Default()),
+	}
 	slog.Info("debug UI config", "INFRACOST_DEBUG_UI", cfg.DebugUI) //nolint:gosec
 	if cfg.DebugUI != "" {
-		// check if the debug UI port is available before starting the server
-		// if its bound, we're going to log it and move on
-		if err := checkPortAvailable(cfg.DebugUI); err != nil {
-			slog.Error("debug UI port is not available", "port", cfg.DebugUI, "error", err)
-		} else {
-			opts = append(opts, server.WithDebugUI(cfg.DebugUI))
-			opts = append(opts, server.WithLogger(slog.Default()))
-		}
+		opts = append(opts, server.WithDebugUI(cfg.DebugUI))
 	}
 	srv := server.NewServer(lspServer, opts...)
 	lspServer.SetServer(srv)
@@ -156,6 +154,7 @@ func main() {
 	srv.HandleMethod("infracost/orgs", lspServer.HandleOrgs)
 	srv.HandleMethod("infracost/selectOrg", lspServer.HandleSelectOrg)
 	srv.HandleMethod("infracost/workspaceSummary", lspServer.HandleWorkspaceSummary)
+	srv.HandleMethod("infracost/exportTrace", lspServer.HandleExportTrace)
 
 	slog.Info("listening on stdio")
 	if err := srv.Run(context.Background(), server.RunStdio()); err != nil {
@@ -163,15 +162,6 @@ func main() {
 		return
 	}
 	slog.Info("server stopped")
-}
-
-func checkPortAvailable(hostPort string) error {
-	ln, err := net.Listen("tcp", hostPort)
-	if err != nil {
-		return err
-	}
-	_ = ln.Close()
-	return nil
 }
 
 func runDebug() {

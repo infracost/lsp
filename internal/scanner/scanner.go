@@ -560,7 +560,7 @@ func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, i
 	defer cancel()
 
 	loadStart := time.Now()
-	client, err := s.Provider.Load(prov, s.LogLevel)
+	client, err := s.Provider.Load(prov)
 	loadDuration := time.Since(loadStart)
 	if err != nil {
 		slog.Error("processProvider: failed to load plugin", "provider", name, "error", err, "elapsed", loadDuration)
@@ -574,7 +574,7 @@ func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, i
 	if err != nil {
 		if isTransportError(err) {
 			slog.Warn("processProvider: transport error, reconnecting", "provider", name, "error", err)
-			client, err = s.Provider.Reconnect(prov, s.LogLevel)
+			client, err = s.Provider.Reconnect(prov)
 			if err != nil {
 				return nil, nil, []string{fmt.Sprintf("reconnecting %s provider: %v", name, err)}
 			}
@@ -599,7 +599,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	defer cancel()
 
 	slog.Debug("parse: loading parser plugin", "plugin_path", s.Parser.Plugin)
-	client, err := s.Parser.Load(s.LogLevel)
+	client, err := s.Parser.Load()
 	if err != nil {
 		return nil, fmt.Errorf("loading parser plugin: %w", err)
 	}
@@ -636,7 +636,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	})
 	if err != nil && isTransportError(err) {
 		slog.Warn("parse: transport error, reconnecting", "error", err)
-		client, err = s.Parser.Reconnect(s.LogLevel)
+		client, err = s.Parser.Reconnect()
 		if err != nil {
 			return nil, fmt.Errorf("reconnecting parser plugin: %w", err)
 		}
