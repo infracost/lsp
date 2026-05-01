@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/infracost/cli/pkg/environment"
 	cliplugins "github.com/infracost/cli/pkg/plugins"
@@ -14,7 +13,6 @@ import (
 )
 
 type Config struct {
-	LogLevel        hclog.Level
 	SlogLevel       slog.Level
 	Currency        string
 	PricingEndpoint string
@@ -27,14 +25,12 @@ type Config struct {
 
 func Load(ctx context.Context) Config {
 	cfg := Config{
-		LogLevel:        hclog.Warn,
 		SlogLevel:       slog.LevelInfo,
 		Currency:        "USD",
 		PricingEndpoint: "https://pricing.api.infracost.io",
 	}
 
 	if os.Getenv("INFRACOST_LOG_LEVEL") == "debug" {
-		cfg.LogLevel = hclog.Debug
 		cfg.SlogLevel = slog.LevelDebug
 	}
 	if v := os.Getenv("INFRACOST_CLI_CURRENCY"); v != "" {
