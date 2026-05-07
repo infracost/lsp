@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -13,6 +14,8 @@ import (
 	proto "github.com/infracost/proto/gen/go/infracost/provider"
 	"golang.org/x/mod/semver"
 )
+
+var download404Pattern = regexp.MustCompile(`unexpected HTTP status:\s*404\b`)
 
 // EnsureParserPlugin resolves the parser plugin, retrying older manifest
 // versions when the unpinned latest artifact is published with a broken URL.
@@ -77,48 +80,49 @@ func EnsureProviderPlugin(cfg *cliplugins.Config, provider proto.Provider) error
 }
 
 func ensurePluginWithFallback(cfg *cliplugins.Config, plugin, wantVersion string) (string, error) {
-	if wantVersion != "" {
-		return cfg.Ensure(plugin, wantVersion)
+	path, err := cfg.Ensure(plugin, wantVersion)
+	if err == nil {
+		return path, nil
+	}
+	initialErr := err
+
+	if wantVersion != "" || !cfg.AutoUpdate || !isDownload404(initialErr) {
+		return "", initialErr
 	}
 
 	manifest, err := loadPluginManifest(cfg.ManifestURL)
 	if err != nil {
-		return cfg.Ensure(plugin, wantVersion)
+		return "", fmt.Errorf("reloading plugin manifest for fallback after %q download failed: %w", plugin, err)
 	}
 
 	entry, ok := manifest.Plugins[plugin]
 	if !ok {
-		return cfg.Ensure(plugin, wantVersion)
+		return "", fmt.Errorf("plugin %q not found in manifest at %s while attempting fallback", plugin, cfg.ManifestURL)
 	}
 
-	versions := pluginVersions(entry)
+	versions := fallbackVersions(entry)
 	if len(versions) == 0 {
-		return cfg.Ensure(plugin, wantVersion)
+		return "", fmt.Errorf("plugin %q has no fallback versions in manifest at %s", plugin, cfg.ManifestURL)
 	}
 
-	var firstErr error
-	for i, version := range versions {
+	lastErr := initialErr
+	for _, version := range versions {
 		path, err := cfg.Ensure(plugin, version)
 		if err == nil {
-			if i > 0 {
-				slog.Warn("plugin download fallback succeeded",
-					"plugin", plugin,
-					"version", version,
-					"latest_version", entry.Latest,
-				)
-			}
+			slog.Warn("plugin download fallback succeeded",
+				"plugin", plugin,
+				"version", version,
+				"latest_version", entry.Latest,
+			)
 			return path, nil
 		}
-
-		if firstErr == nil {
-			firstErr = err
-		}
+		lastErr = err
 		if !isDownload404(err) {
 			return "", err
 		}
 	}
 
-	return "", firstErr
+	return "", fmt.Errorf("no working fallback download found for plugin %q: %w", plugin, lastErr)
 }
 
 func loadPluginManifest(manifestURL string) (*cliplugins.Manifest, error) {
@@ -142,7 +146,7 @@ func loadPluginManifest(manifestURL string) (*cliplugins.Manifest, error) {
 	return &manifest, nil
 }
 
-func pluginVersions(plugin cliplugins.Plugin) []string {
+func fallbackVersions(plugin cliplugins.Plugin) []string {
 	versions := make([]string, 0, len(plugin.Versions))
 	for version := range plugin.Versions {
 		if version == plugin.Latest {
@@ -160,10 +164,6 @@ func pluginVersions(plugin cliplugins.Plugin) []string {
 		return versions[i] > versions[j]
 	})
 
-	if plugin.Latest != "" {
-		return append([]string{plugin.Latest}, versions...)
-	}
-
 	return versions
 }
 
@@ -175,5 +175,9 @@ func normalizeSemver(version string) string {
 }
 
 func isDownload404(err error) bool {
-	return strings.Contains(err.Error(), "unexpected HTTP status: 404 Not Found")
+	if err == nil {
+		return false
+	}
+
+	return download404Pattern.MatchString(err.Error())
 }
