@@ -66,7 +66,7 @@ func main() {
 		Level: cfg.SlogLevel,
 	})))
 
-	if err := cfg.Plugins.EnsureParser(); err != nil {
+	if err := config.EnsureParserPlugin(&cfg.Plugins); err != nil {
 		log.Fatalf("ensuring parser plugin: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func main() {
 			events.RegisterMetadata("orgId", id)
 		},
 		EnsureProvider: func(p proto.Provider) error {
-			if err := cfg.Plugins.EnsureProvider(p); err != nil {
+			if err := config.EnsureProviderPlugin(&cfg.Plugins, p); err != nil {
 				return err
 			}
 			providerClient.AWS = cfg.Plugins.Providers.AWS
