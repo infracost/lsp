@@ -103,8 +103,8 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	}
 }
 
-// HandleLogout clears the cached token from disk and memory, then notifies the
-// client to show the login screen.
+// HandleLogout clears the cached token and user/org cache from disk and
+// memory, then notifies the client to show the login screen.
 func (s *Server) HandleLogout(ctx context.Context, _ json.RawMessage) (any, error) {
 	cfg := &auth.Config{}
 	cfg.TokenCachePath = config.TokenCachePath()
@@ -112,8 +112,11 @@ func (s *Server) HandleLogout(ctx context.Context, _ json.RawMessage) (any, erro
 	if err := cfg.ClearCache(); err != nil {
 		slog.Warn("logout: failed to clear token cache", "error", err)
 	}
+	if err := newAuthConfig().ClearUserCache(); err != nil {
+		slog.Warn("logout: failed to clear user cache", "error", err)
+	}
 	s.tokenSource.Set(nil)
-	slog.Info("logout: token cleared")
+	slog.Info("logout: token and user cache cleared")
 
 	if s.client != nil {
 		if err := s.client.Notify(ctx, "infracost/logoutComplete", nil); err != nil {

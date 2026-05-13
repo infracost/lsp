@@ -46,6 +46,27 @@ func TestHandleOrgs_NoCache(t *testing.T) {
 	assert.Empty(t, info.SelectedOrgID)
 }
 
+func TestHandleLogoutClearsUserCache(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeUserCache(t, &auth.UserCache{
+		Organizations: []auth.CachedOrganization{
+			{ID: "org-1", Name: "Acme", Slug: "acme"},
+		},
+	})
+
+	uc, err := newAuthConfig().LoadUserCache()
+	require.NoError(t, err)
+	require.NotNil(t, uc)
+
+	s := newTestServer(t)
+	_, err = s.HandleLogout(context.Background(), nil)
+	require.NoError(t, err)
+
+	uc, err = newAuthConfig().LoadUserCache()
+	require.NoError(t, err)
+	assert.Nil(t, uc)
+}
+
 func TestHandleOrgs_SingleOrg(t *testing.T) {
 	writeUserCache(t, &auth.UserCache{
 		Organizations: []auth.CachedOrganization{
