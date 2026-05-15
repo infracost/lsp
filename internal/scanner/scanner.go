@@ -55,6 +55,7 @@ type Scanner struct {
 	productionFilters  []*event.ProductionFilter
 	usageDefaults      *event.UsageDefaults
 	repositoryName     string
+	configTemplate     string
 	runParamsOrgID     string
 	runParamsFetchedAt time.Time
 	runParamsTTL       time.Duration
@@ -65,6 +66,10 @@ type Scanner struct {
 // Init initializes internal state. Must be called before first use.
 func (s *Scanner) Init() {
 	s.policyDetailCache = make(map[string]dashboard.PolicyDetail)
+}
+
+func (s *Scanner) GetConfigTemplate() string {
+	return s.configTemplate
 }
 
 // accessToken returns a valid access token from the token source.
@@ -93,9 +98,9 @@ func (s *Scanner) SetRunParamsTTL(d time.Duration) {
 	slog.Info("scanner: runParams cache TTL set", "ttl", d)
 }
 
-// fetchRunParams queries the dashboard API for run parameters (org ID, tag policies, etc.)
+// FetchRunParams queries the dashboard API for run parameters (org ID, tag policies, etc.)
 // and stores parsed tag policies on the scanner. Returns org ID (empty on failure, non-fatal).
-func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
+func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	if !s.TokenSource.Valid() {
 		return ""
 	}
@@ -159,6 +164,8 @@ func (s *Scanner) fetchRunParams(ctx context.Context, rootDir string) string {
 	}
 	s.repositoryName = params.RepositoryName
 
+	s.configTemplate = params.ConfigTemplate
+
 	s.usageDefaults = nil
 	if len(params.UsageDefaults) > 0 {
 		var ud event.UsageDefaults
@@ -208,12 +215,12 @@ func (s *Scanner) Close() {
 }
 
 // LoadConfig loads or auto-generates an infracost config for the given directory.
-func LoadConfig(dir string) (*repoconfig.Config, error) {
+func LoadConfig(dir, configTemplate string) (*repoconfig.Config, error) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
-	return loadOrGenerateConfig(absDir)
+	return loadOrGenerateConfig(absDir, configTemplate)
 }
 
 // Scan analyzes the given directory and returns resource cost results.
@@ -223,7 +230,7 @@ func (s *Scanner) Scan(ctx context.Context, dir string) (*ScanResult, error) {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
-	cfg, err := loadOrGenerateConfig(absDir)
+	cfg, err := loadOrGenerateConfig(absDir, s.configTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
@@ -258,7 +265,7 @@ func (s *Scanner) loadRepoUsage(rootDir string, cfg *repoconfig.Config) *usage.U
 func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.Config) (*ScanResult, error) {
 	result := &ScanResult{}
 
-	orgID := s.fetchRunParams(ctx, rootDir)
+	orgID := s.FetchRunParams(ctx, rootDir)
 	slog.Debug("scanAll: starting", "projects", len(cfg.Projects), "currency", cfg.Currency, "org_id", orgID)
 
 	repoUsage := s.loadRepoUsage(rootDir, cfg)
@@ -284,7 +291,7 @@ func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.C
 
 // ScanProject scans a single project and returns its results.
 func (s *Scanner) ScanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project) (*ScanResult, error) {
-	orgID := s.fetchRunParams(ctx, rootDir)
+	orgID := s.FetchRunParams(ctx, rootDir)
 	repoUsage := s.loadRepoUsage(rootDir, cfg)
 	branchName := vcs.GetCurrentBranch(rootDir)
 	return s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName)
@@ -603,7 +610,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	}
 
 	cacheDir := filepath.Join(os.TempDir(), ".infracost", "cache")
-	_ = os.MkdirAll(cacheDir, 0700)
+	_ = os.MkdirAll(cacheDir, 0o700)
 
 	genericOpts := &options.GenericOptions{
 		ProjectName:        project.Name,
@@ -1005,7 +1012,7 @@ func resolveFilename(projectPath, filename string) string {
 	return filepath.Join(projectPath, filename)
 }
 
-func loadOrGenerateConfig(dir string) (*repoconfig.Config, error) {
+func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error) {
 	env := envToMap()
 
 	configPath := filepath.Join(dir, "infracost.yml")
@@ -1020,12 +1027,16 @@ func loadOrGenerateConfig(dir string) (*repoconfig.Config, error) {
 		repoconfig.WithEnvVars(env),
 	}
 
-	tmplPath := filepath.Join(dir, "infracost.yml.tmpl")
-	if _, err := os.Stat(tmplPath); err == nil {
-		slog.Debug("loadConfig: found template", "path", tmplPath)
-		content, err := os.ReadFile(tmplPath) // #nosec G304
-		if err == nil {
-			opts = append(opts, repoconfig.WithTemplate(string(content)))
+	if configTemplate != "" {
+		opts = append(opts, repoconfig.WithTemplate(configTemplate))
+	} else {
+		tmplPath := filepath.Join(dir, "infracost.yml.tmpl")
+		if _, err := os.Stat(tmplPath); err == nil {
+			slog.Debug("loadConfig: found template", "path", tmplPath)
+			content, err := os.ReadFile(tmplPath) // #nosec G304
+			if err == nil {
+				opts = append(opts, repoconfig.WithTemplate(string(content)))
+			}
 		}
 	}
 
