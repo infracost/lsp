@@ -35,6 +35,7 @@ func (s *Server) InlayHint(_ context.Context, params *lsp.InlayHintParams) ([]ls
 
 	reqPath := filepath.Clean(uriToPath(uri))
 	scanning := s.isScanning()
+	currency := s.currency()
 
 	violationsByAddr := make(map[string][]scanner.FinopsViolation)
 	for _, v := range result.Violations {
@@ -67,7 +68,7 @@ func (s *Server) InlayHint(_ context.Context, params *lsp.InlayHintParams) ([]ls
 		case !r.IsSupported:
 			label = "Not supported"
 		default:
-			label = scanner.FormatCost(r.MonthlyCost) + "/mo"
+			label = scanner.FormatCostCurrency(r.MonthlyCost, currency) + "/mo"
 		}
 
 		hint := lsp.InlayHint{
@@ -78,7 +79,7 @@ func (s *Server) InlayHint(_ context.Context, params *lsp.InlayHintParams) ([]ls
 		if !scanning && r.IsSupported {
 			hint.Tooltip = &lsp.MarkupContent{
 				Kind:  lsp.Markdown,
-				Value: buildFullHoverMarkdown(r, violationsByAddr[r.Name], tagViolationsByAddr[r.Name]),
+				Value: buildFullHoverMarkdown(r, violationsByAddr[r.Name], tagViolationsByAddr[r.Name], currency),
 			}
 		}
 		hints = append(hints, hint)
@@ -119,7 +120,7 @@ func (s *Server) InlayHint(_ context.Context, params *lsp.InlayHintParams) ([]ls
 		if scanning {
 			label = "Calculating..."
 		} else {
-			label = fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCost(mc.MonthlyCost), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
+			label = fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCostCurrency(mc.MonthlyCost, currency), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
 		}
 
 		var modResources []scanner.ResourceResult
@@ -137,7 +138,7 @@ func (s *Server) InlayHint(_ context.Context, params *lsp.InlayHintParams) ([]ls
 		if !scanning {
 			hint.Tooltip = &lsp.MarkupContent{
 				Kind:  lsp.Markdown,
-				Value: buildModuleHoverMarkdown(mc, modResources),
+				Value: buildModuleHoverMarkdown(mc, modResources, currency),
 			}
 		}
 		hints = append(hints, hint)

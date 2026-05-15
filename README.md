@@ -4,7 +4,7 @@ A Language Server Protocol (LSP) server that shows cloud cost estimates inline w
 
 ## Features
 
-- **Code Lenses** — `$X.XX/mo` shown above each resource block
+- **Code Lenses** — monthly cost shown above each resource block
 - **Inlay Hints** — inline cost display for editors without code lens support
 - **Hover** — markdown table with cost component breakdown
 - **Diagnostics** — FinOps policy violations as warnings, parse errors as errors
@@ -34,7 +34,9 @@ Find the extension either through the IDE Extension/Plugin marketplace or in the
 
 ## Configuration
 
-The LSP server is configured via environment variables. Most are optional — the server discovers plugins from `PATH` by default.
+The LSP server is configured via editor-provided LSP settings and environment variables. Most are optional — the server discovers plugins from `PATH` by default.
+
+Editor extensions can send a `currency` setting (for example `EUR` or `GBP`) via `workspace/didChangeConfiguration` or initialization options. This overrides `INFRACOST_CLI_CURRENCY` for scans and UI formatting. Supported currencies match the pricing API currency fields.
 
 | Variable                 | Description                          | Default      |
 | ------------------------ | ------------------------------------ | ------------ |

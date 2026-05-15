@@ -115,18 +115,18 @@ func (s *Server) HandleResourceDetails(_ context.Context, params json.RawMessage
 			continue
 		}
 
-		detail := buildResourceDetail(r, violationsByAddr[r.Name], tagViolationsByAddr[r.Name])
+		detail := buildResourceDetail(r, violationsByAddr[r.Name], tagViolationsByAddr[r.Name], s.currency())
 		return ResourceDetailsResult{Resource: &detail, NeedsLogin: needsLogin}, nil
 	}
 
 	return ResourceDetailsResult{NeedsLogin: needsLogin}, nil
 }
 
-func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsViolation, tagViolations []scanner.TagViolation) ResourceDetail {
+func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsViolation, tagViolations []scanner.TagViolation, currency string) ResourceDetail {
 	detail := ResourceDetail{
 		Name:        r.Name,
 		Type:        r.Type,
-		MonthlyCost: scanner.FormatCost(r.MonthlyCost),
+		MonthlyCost: scanner.FormatCostCurrency(r.MonthlyCost, currency),
 	}
 
 	for _, c := range r.CostComponents {
@@ -136,7 +136,7 @@ func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsVi
 		}
 		price := "-"
 		if c.Price != nil && !c.Price.IsZero() {
-			price = fmt.Sprintf("$%.4f", c.Price.Float64())
+			price = scanner.FormatPriceCurrency(c.Price, currency)
 		}
 
 		detail.CostComponents = append(detail.CostComponents, CostComponentDetail{
@@ -144,7 +144,7 @@ func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsVi
 			Unit:            c.Unit,
 			Price:           price,
 			MonthlyQuantity: qty,
-			MonthlyCost:     scanner.FormatCost(c.TotalMonthlyCost),
+			MonthlyCost:     scanner.FormatCostCurrency(c.TotalMonthlyCost, currency),
 		})
 	}
 
@@ -155,7 +155,7 @@ func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsVi
 			Message:          v.Message,
 			Attribute:        v.Attribute,
 			BlockPullRequest: v.BlockPullRequest,
-			MonthlySavings:   scanner.FormatCost(v.MonthlySavings),
+			MonthlySavings:   scanner.FormatCostCurrency(v.MonthlySavings, currency),
 			SavingsDetails:   v.SavingsDetails,
 		}
 		if v.PolicyDetail != nil {

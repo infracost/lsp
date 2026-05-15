@@ -30,8 +30,9 @@ import (
 
 // Settings holds client-provided configuration synced via workspace/didChangeConfiguration.
 type Settings struct {
-	RunParamsCacheTTLSeconds int   `json:"runParamsCacheTTLSeconds"`
-	EnableDiagnostics        *bool `json:"enableDiagnostics"`
+	RunParamsCacheTTLSeconds int    `json:"runParamsCacheTTLSeconds"`
+	EnableDiagnostics        *bool  `json:"enableDiagnostics"`
+	Currency                 string `json:"currency"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
@@ -52,6 +53,7 @@ type Server struct {
 	mu             sync.RWMutex
 	settings       Settings
 	config         *repoconfig.Config
+	scanVersion    int64
 	projectResults map[string]*scanner.ScanResult // project name → result
 
 	// filesWithDiagnostics tracks URIs that currently have published diagnostics.
@@ -201,6 +203,7 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 		ExtensionVersion string `json:"extensionVersion"`
 		ClientName       string `json:"clientName"`
 		SupportsCodeLens *bool  `json:"supportsCodeLens"`
+		Currency         string `json:"currency"`
 	}
 	if len(params.InitializationOptions) > 0 {
 		slog.Debug("initializationOptions", "raw", string(params.InitializationOptions))
@@ -214,6 +217,17 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 	}
 	if initOpts.ExtensionVersion != "" {
 		events.RegisterMetadata("version", initOpts.ExtensionVersion)
+	}
+	if initOpts.Currency != "" {
+		currency := scanner.NormalizeCurrency(initOpts.Currency)
+		s.mu.Lock()
+		s.settings.Currency = currency
+		s.mu.Unlock()
+		currencyChanged := false
+		if s.scanner != nil {
+			currencyChanged = s.scanner.SetCurrency(currency)
+		}
+		slog.Info("initialize: applied currency", "currency", currency, "currency_changed", currencyChanged)
 	}
 
 	// Default to true — clients that don't send this field get code lens
@@ -322,6 +336,8 @@ func (s *Server) DidChangeConfiguration(_ context.Context, params *lsp.DidChange
 		return nil
 	}
 
+	settings.Currency = scanner.NormalizeCurrency(settings.Currency)
+
 	s.mu.Lock()
 	s.settings = settings
 	s.mu.Unlock()
@@ -330,9 +346,28 @@ func (s *Server) DidChangeConfiguration(_ context.Context, params *lsp.DidChange
 	if ttl <= 0 {
 		ttl = defaultRunParamsCacheTTLSeconds
 	}
-	s.scanner.SetRunParamsTTL(time.Duration(ttl) * time.Second)
+	if s.scanner != nil {
+		s.scanner.SetRunParamsTTL(time.Duration(ttl) * time.Second)
+	}
 
-	slog.Info("didChangeConfiguration", "settings", settings)
+	currencyChanged := false
+	if settings.Currency != "" && s.scanner != nil {
+		currencyChanged = s.scanner.SetCurrency(settings.Currency)
+	}
+	if currencyChanged {
+		s.bumpScanVersion()
+		s.cancelScheduledScans()
+		s.clearResults()
+		s.publishDiagnostics()
+		s.refreshCodeLenses()
+		s.refreshInlayHints()
+		s.sendScanComplete()
+		if s.workspaceRoot != "" {
+			go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
+		}
+	}
+
+	slog.Info("didChangeConfiguration", "settings", settings, "currency_changed", currencyChanged)
 	return nil
 }
 
@@ -377,6 +412,7 @@ func (s *Server) DidSave(_ context.Context, params *lsp.DidSaveTextDocumentParam
 
 // loadConfigAndScan loads the workspace config and runs an initial scan of all projects.
 func (s *Server) loadConfigAndScan() {
+	scanVersion := s.currentScanVersion()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -391,6 +427,10 @@ func (s *Server) loadConfigAndScan() {
 		progress.End(ctx, "Failed to load config")
 		return
 	}
+	if !s.isCurrentScanVersion(scanVersion) {
+		slog.Info("loadConfigAndScan: stale scan after config load, discarding")
+		return
+	}
 	s.setConfig(cfg)
 	slog.Info("loadConfigAndScan: config loaded", "projects", len(cfg.Projects))
 
@@ -399,6 +439,10 @@ func (s *Server) loadConfigAndScan() {
 	totalTagViolations := 0
 
 	for i, project := range cfg.Projects {
+		if !s.isCurrentScanVersion(scanVersion) {
+			slog.Info("loadConfigAndScan: stale scan before project, discarding")
+			return
+		}
 		pct := (i * 100) / len(cfg.Projects)
 		progress.Report(ctx, fmt.Sprintf("Scanning %s...", project.Name), pct)
 
@@ -413,6 +457,10 @@ func (s *Server) loadConfigAndScan() {
 		if err != nil {
 			slog.Error("loadConfigAndScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
 			continue
+		}
+		if !s.isCurrentScanVersion(scanVersion) {
+			slog.Info("loadConfigAndScan: stale project scan, discarding", "name", project.Name)
+			return
 		}
 
 		slog.Info("loadConfigAndScan: project scanned",
@@ -475,6 +523,24 @@ func (s *Server) sendScanComplete() {
 		defer cancel()
 		if err := s.client.Notify(ctx, "infracost/scanComplete", nil); err != nil {
 			slog.Warn("sendScanComplete: failed", "error", err)
+		}
+	}()
+}
+
+func (s *Server) SendLog(level, message string, fields map[string]any) {
+	if s.client == nil {
+		return
+	}
+	params := map[string]any{
+		"level":   level,
+		"message": message,
+		"fields":  fields,
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.client.Notify(ctx, "infracost/log", params); err != nil {
+			slog.Warn("sendLog: failed", "error", err)
 		}
 	}()
 }
@@ -548,6 +614,45 @@ func (s *Server) setProjectResult(name string, result *scanner.ScanResult) {
 	s.projectResults[name] = result
 }
 
+func (s *Server) clearResults() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectResults = make(map[string]*scanner.ScanResult)
+}
+
+func (s *Server) bumpScanVersion() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scanVersion++
+	return s.scanVersion
+}
+
+func (s *Server) currentScanVersion() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.scanVersion
+}
+
+func (s *Server) isCurrentScanVersion(version int64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.scanVersion == version
+}
+
+func (s *Server) cancelScheduledScans() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, t := range s.scanTimers {
+		t.Stop()
+		delete(s.scanTimers, name)
+	}
+	for name, cancel := range s.scanCancels {
+		cancel()
+		delete(s.scanCancels, name)
+	}
+	s.dirtyProjects = make(map[string]string)
+}
+
 func (s *Server) setScanningProject(name string, scanning bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -594,6 +699,7 @@ func (s *Server) popDirtyProject(name string) (string, bool) {
 // cached results. Used when the workspace root changes.
 func (s *Server) resetState() {
 	s.mu.Lock()
+	s.scanVersion++
 	for name, t := range s.scanTimers {
 		t.Stop()
 		delete(s.scanTimers, name)
