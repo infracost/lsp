@@ -51,12 +51,13 @@ func (s *Server) publishDiagnostics() {
 		byFile[uri] = append(byFile[uri], d...)
 	}
 
+	currency := s.currency()
 	for _, v := range result.Violations {
 		absPath, _ := filepath.Abs(v.Filename)
 		if s.ignores.IsIgnored(absPath, v.Address, v.PolicySlug) {
 			continue
 		}
-		addDiag(v.Filename, finopsViolationToDiagnostic(v))
+		addDiag(v.Filename, finopsViolationToDiagnostic(v, currency))
 	}
 	for _, v := range result.TagViolations {
 		diags := tagViolationToDiagnostics(v)
@@ -105,7 +106,7 @@ func (s *Server) publishDiagnostics() {
 }
 
 // finopsViolationToDiagnostic converts a single FinopsViolation to an lsp.Diagnostic.
-func finopsViolationToDiagnostic(v scanner.FinopsViolation) []lsp.Diagnostic {
+func finopsViolationToDiagnostic(v scanner.FinopsViolation, currency string) []lsp.Diagnostic {
 	severity := lsp.SeverityWarning
 	if v.BlockPullRequest {
 		severity = lsp.SeverityError
@@ -113,7 +114,7 @@ func finopsViolationToDiagnostic(v scanner.FinopsViolation) []lsp.Diagnostic {
 
 	msg := v.Message
 	if v.MonthlySavings != nil && !v.MonthlySavings.IsZero() {
-		msg = fmt.Sprintf("%s — saves %s/mo", msg, scanner.FormatCost(v.MonthlySavings))
+		msg = fmt.Sprintf("%s — saves %s/mo", msg, scanner.FormatCostCurrency(v.MonthlySavings, currency))
 	}
 	rng := lsp.Range{
 		Start: lsp.Position{Line: safeLineToLSP(v.StartLine), Character: 0},

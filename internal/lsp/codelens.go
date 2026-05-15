@@ -23,6 +23,7 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 	}
 
 	reqPath := filepath.Clean(uriToPath(uri))
+	currency := s.currency()
 
 	// Build maps of resource address → violations.
 	violationsByAddr := make(map[string][]scanner.FinopsViolation)
@@ -61,7 +62,7 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 		case r.IsFree || (r.MonthlyCost != nil && !r.MonthlyCost.IsZero()):
 			lenses = append(lenses, lsp.CodeLens{
 				Range:   rng,
-				Command: revealResourceCommand(scanner.FormatCost(r.MonthlyCost)+"/mo", uri, line),
+				Command: revealResourceCommand(scanner.FormatCostCurrency(r.MonthlyCost, currency)+"/mo", uri, line),
 			})
 		}
 
@@ -100,7 +101,7 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 			End:   lsp.Position{Line: line, Character: 0},
 		}
 
-		title := fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCost(mc.MonthlyCost), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
+		title := fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCostCurrency(mc.MonthlyCost, currency), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
 		lenses = append(lenses, lsp.CodeLens{
 			Range:   rng,
 			Command: revealResourceCommand(title, uri, line),

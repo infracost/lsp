@@ -1,8 +1,11 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -10,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	repoconfig "github.com/infracost/config"
@@ -27,6 +32,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/infracost/proto/gen/go/infracost/usage"
 
@@ -48,6 +54,7 @@ type Scanner struct {
 	TokenSource       *api.TokenSource
 	HTTPClient        *http.Client
 	OnOrgID           func(string)
+	OnLog             func(level, message string, fields map[string]any)
 
 	tagPolicies        []*event.TagPolicy
 	finopsPolicies     []*event.FinopsPolicySettings
@@ -56,10 +63,15 @@ type Scanner struct {
 	usageDefaults      *event.UsageDefaults
 	repositoryName     string
 	configTemplate     string
+	currencyMu         sync.RWMutex
+	exchangeRateMu     sync.Mutex
+	exchangeRates      map[string]*rat.Rat
+	runParamsMu        sync.RWMutex
 	runParamsOrgID     string
 	runParamsFetchedAt time.Time
 	runParamsTTL       time.Duration
 
+	policyDetailMu    sync.RWMutex
 	policyDetailCache map[string]dashboard.PolicyDetail
 }
 
@@ -92,9 +104,42 @@ func (s *Scanner) HasTokenSource() bool {
 	return s.TokenSource != nil && s.TokenSource.Valid()
 }
 
+// CurrencyOrDefault returns the scanner currency, falling back to USD.
+func (s *Scanner) CurrencyOrDefault() string {
+	s.currencyMu.RLock()
+	currency := s.Currency
+	s.currencyMu.RUnlock()
+
+	return CurrencyOrDefault(currency)
+}
+
+// SetCurrency updates the scanner currency. It returns true when the value changed.
+func (s *Scanner) SetCurrency(currency string) bool {
+	currency = CurrencyOrDefault(currency)
+
+	s.currencyMu.Lock()
+	if s.Currency == currency {
+		s.currencyMu.Unlock()
+		return false
+	}
+	s.Currency = currency
+	s.currencyMu.Unlock()
+
+	s.exchangeRateMu.Lock()
+	s.exchangeRates = nil
+	s.exchangeRateMu.Unlock()
+
+	if s.Provider != nil {
+		s.Provider.Close()
+	}
+	return true
+}
+
 // SetRunParamsTTL sets how long fetchRunParams results are cached.
 func (s *Scanner) SetRunParamsTTL(d time.Duration) {
+	s.runParamsMu.Lock()
 	s.runParamsTTL = d
+	s.runParamsMu.Unlock()
 	slog.Info("scanner: runParams cache TTL set", "ttl", d)
 }
 
@@ -105,10 +150,15 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 		return ""
 	}
 
+	s.runParamsMu.RLock()
 	if s.runParamsTTL > 0 && !s.runParamsFetchedAt.IsZero() && time.Since(s.runParamsFetchedAt) < s.runParamsTTL {
-		slog.Debug("fetchRunParams: using cached result", "org_id", s.runParamsOrgID, "age", time.Since(s.runParamsFetchedAt))
-		return s.runParamsOrgID
+		orgID := s.runParamsOrgID
+		age := time.Since(s.runParamsFetchedAt)
+		s.runParamsMu.RUnlock()
+		slog.Debug("fetchRunParams: using cached result", "org_id", orgID, "age", age)
+		return orgID
 	}
+	s.runParamsMu.RUnlock()
 
 	repoURL := vcs.GetRemoteURL(rootDir)
 	branch := vcs.GetCurrentBranch(rootDir)
@@ -120,7 +170,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 		return ""
 	}
 
-	s.tagPolicies = nil
+	tagPolicies := make([]*event.TagPolicy, 0, len(params.TagPolicies))
 	for i, raw := range params.TagPolicies {
 		slog.Debug("fetchRunParams: raw tag policy", "index", i, "json", string(raw))
 		var tp event.TagPolicy
@@ -128,10 +178,10 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 			slog.Warn("fetchRunParams: failed to unmarshal tag policy", "error", err)
 			continue
 		}
-		s.tagPolicies = append(s.tagPolicies, &tp)
+		tagPolicies = append(tagPolicies, &tp)
 	}
 
-	s.finopsPolicies = nil
+	finopsPolicies := make([]*event.FinopsPolicySettings, 0, len(params.FinopsPolicies))
 	for i, raw := range params.FinopsPolicies {
 		slog.Debug("fetchRunParams: raw finops policy", "index", i, "json", string(raw))
 		var fp event.FinopsPolicySettings
@@ -139,10 +189,10 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 			slog.Warn("fetchRunParams: failed to unmarshal finops policy", "error", err)
 			continue
 		}
-		s.finopsPolicies = append(s.finopsPolicies, &fp)
+		finopsPolicies = append(finopsPolicies, &fp)
 	}
 
-	s.guardrails = nil
+	guardrails := make([]*event.Guardrail, 0, len(params.Guardrails))
 	for i, raw := range params.Guardrails {
 		slog.Debug("fetchRunParams: raw guardrail", "index", i, "json", string(raw))
 		var g event.Guardrail
@@ -150,47 +200,79 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 			slog.Warn("fetchRunParams: failed to unmarshal guardrail", "error", err)
 			continue
 		}
-		s.guardrails = append(s.guardrails, &g)
+		guardrails = append(guardrails, &g)
 	}
+	guardrails = dedupeGuardrails(guardrails)
 
-	s.productionFilters = nil
+	productionFilters := make([]*event.ProductionFilter, 0, len(params.ProductionFilters))
 	for _, raw := range params.ProductionFilters {
 		var pf event.ProductionFilter
 		if err := protojson.Unmarshal(raw, &pf); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal production filter", "error", err)
 			continue
 		}
-		s.productionFilters = append(s.productionFilters, &pf)
+		productionFilters = append(productionFilters, &pf)
 	}
-	s.repositoryName = params.RepositoryName
 
 	s.configTemplate = params.ConfigTemplate
 
 	s.usageDefaults = nil
+	var usageDefaults *event.UsageDefaults
 	if len(params.UsageDefaults) > 0 {
 		var ud event.UsageDefaults
 		if err := protojson.Unmarshal(params.UsageDefaults, &ud); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal usage defaults", "error", err)
 		} else {
-			s.usageDefaults = &ud
+			usageDefaults = &ud
 		}
 	}
 
+	s.runParamsMu.Lock()
+	s.tagPolicies = tagPolicies
+	s.finopsPolicies = finopsPolicies
+	s.guardrails = guardrails
+	s.productionFilters = productionFilters
+	s.repositoryName = params.RepositoryName
+	s.usageDefaults = usageDefaults
 	s.runParamsOrgID = params.OrganizationID
 	s.runParamsFetchedAt = time.Now()
+	s.runParamsMu.Unlock()
 
 	if s.OnOrgID != nil {
 		s.OnOrgID(params.OrganizationID)
 	}
 
-	slog.Debug("fetchRunParams: resolved", "org_id", params.OrganizationID, "tag_policies", len(s.tagPolicies))
+	slog.Debug("fetchRunParams: resolved", "org_id", params.OrganizationID, "tag_policies", len(tagPolicies))
 	return params.OrganizationID
+}
+
+type runParamsSnapshot struct {
+	usageDefaults     *event.UsageDefaults
+	productionFilters []*event.ProductionFilter
+	repositoryName    string
+	finopsPolicies    []*event.FinopsPolicySettings
+	tagPolicies       []*event.TagPolicy
+	guardrails        []*event.Guardrail
+}
+
+func (s *Scanner) runParamsSnapshot() runParamsSnapshot {
+	s.runParamsMu.RLock()
+	defer s.runParamsMu.RUnlock()
+	return runParamsSnapshot{
+		usageDefaults:     s.usageDefaults,
+		productionFilters: append([]*event.ProductionFilter(nil), s.productionFilters...),
+		repositoryName:    s.repositoryName,
+		finopsPolicies:    append([]*event.FinopsPolicySettings(nil), s.finopsPolicies...),
+		tagPolicies:       append([]*event.TagPolicy(nil), s.tagPolicies...),
+		guardrails:        append([]*event.Guardrail(nil), s.guardrails...),
+	}
 }
 
 // EvaluateGuardrails evaluates the cached guardrail configs against the
 // provided per-project costs and returns one result per guardrail.
 func (s *Scanner) EvaluateGuardrails(projects []goprotoevent.ProjectCostInfo) []goprotoevent.GuardrailResult {
-	if len(s.guardrails) == 0 {
+	guardrails := s.runParamsSnapshot().guardrails
+	if len(guardrails) == 0 {
 		return nil
 	}
 
@@ -205,7 +287,84 @@ func (s *Scanner) EvaluateGuardrails(projects []goprotoevent.ProjectCostInfo) []
 		}
 	}
 
-	return goprotoevent.Guardrails(s.guardrails).Evaluate(headTotal, pastTotal, projects)
+	return goprotoevent.Guardrails(s.guardrailsForCurrency(guardrails)).Evaluate(headTotal, pastTotal, projects)
+}
+
+func (s *Scanner) guardrailsForCurrency(guardrails []*event.Guardrail) []*event.Guardrail {
+	baseGuardrails := dedupeGuardrails(guardrails)
+	currency := s.CurrencyOrDefault()
+	if currency == "USD" {
+		return baseGuardrails
+	}
+
+	rate := s.cachedExchangeRate(currency)
+	if rate == nil || rate.Equals(rat.New(1)) {
+		return baseGuardrails
+	}
+
+	convertedGuardrails := make([]*event.Guardrail, 0, len(baseGuardrails))
+	for _, g := range baseGuardrails {
+		if g == nil {
+			continue
+		}
+		converted, ok := proto.Clone(g).(*event.Guardrail)
+		if !ok {
+			convertedGuardrails = append(convertedGuardrails, g)
+			continue
+		}
+		if converted.TotalThreshold != nil {
+			converted.TotalThreshold = rat.FromProto(converted.TotalThreshold).Mul(rate).Proto()
+		}
+		if converted.IncreaseThreshold != nil {
+			converted.IncreaseThreshold = rat.FromProto(converted.IncreaseThreshold).Mul(rate).Proto()
+		}
+		convertedGuardrails = append(convertedGuardrails, converted)
+	}
+	return convertedGuardrails
+}
+
+func dedupeGuardrails(guardrails []*event.Guardrail) []*event.Guardrail {
+	if len(guardrails) < 2 {
+		return guardrails
+	}
+
+	seen := make(map[string]struct{}, len(guardrails))
+	deduped := make([]*event.Guardrail, 0, len(guardrails))
+	for _, g := range guardrails {
+		if g == nil {
+			continue
+		}
+		key := guardrailKey(g)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, g)
+	}
+	return deduped
+}
+
+func guardrailKey(g *event.Guardrail) string {
+	if g.GetId() != "" {
+		return "id:" + g.GetId()
+	}
+	return fmt.Sprintf("fallback:%s:%d:%s:%v:%v:%v",
+		g.GetName(),
+		g.GetScope(),
+		g.GetMessage(),
+		g.TotalThreshold,
+		g.IncreaseThreshold,
+		g.IncreasePercentThreshold,
+	)
+}
+
+func (s *Scanner) cachedExchangeRate(currency string) *rat.Rat {
+	s.exchangeRateMu.Lock()
+	defer s.exchangeRateMu.Unlock()
+	if s.exchangeRates == nil {
+		return nil
+	}
+	return s.exchangeRates[CurrencyOrDefault(currency)]
 }
 
 // Close kills all persistent plugin subprocesses.
@@ -239,8 +398,8 @@ func (s *Scanner) Scan(ctx context.Context, dir string) (*ScanResult, error) {
 }
 
 // loadRepoUsage loads repo-level usage: API defaults merged with the repo's usage YAML file.
-func (s *Scanner) loadRepoUsage(rootDir string, cfg *repoconfig.Config) *usage.Usage {
-	repoUsage := loadUsageDefaults(s.usageDefaults, "")
+func (s *Scanner) loadRepoUsage(rootDir string, cfg *repoconfig.Config, usageDefaults *event.UsageDefaults) *usage.Usage {
+	repoUsage := loadUsageDefaults(usageDefaults, "")
 	if cfg.UsageFilePath != "" {
 		usagePath := filepath.Join(rootDir, cfg.UsageFilePath)
 		if stat, err := os.Stat(usagePath); err == nil && !stat.IsDir() {
@@ -266,13 +425,14 @@ func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.C
 	result := &ScanResult{}
 
 	orgID := s.FetchRunParams(ctx, rootDir)
+	params := s.runParamsSnapshot()
 	slog.Debug("scanAll: starting", "projects", len(cfg.Projects), "currency", cfg.Currency, "org_id", orgID)
 
-	repoUsage := s.loadRepoUsage(rootDir, cfg)
+	repoUsage := s.loadRepoUsage(rootDir, cfg, params.usageDefaults)
 	branchName := vcs.GetCurrentBranch(rootDir)
 
 	for _, project := range cfg.Projects {
-		r, err := s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName)
+		r, err := s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName, params)
 		if err != nil {
 			slog.Error("scanAll: project failed", "name", project.Name, "error", err)
 			result.Errors = append(result.Errors, fmt.Sprintf("project %s: %v", project.Name, err))
@@ -292,12 +452,13 @@ func (s *Scanner) ScanAll(ctx context.Context, rootDir string, cfg *repoconfig.C
 // ScanProject scans a single project and returns its results.
 func (s *Scanner) ScanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project) (*ScanResult, error) {
 	orgID := s.FetchRunParams(ctx, rootDir)
-	repoUsage := s.loadRepoUsage(rootDir, cfg)
+	params := s.runParamsSnapshot()
+	repoUsage := s.loadRepoUsage(rootDir, cfg, params.usageDefaults)
 	branchName := vcs.GetCurrentBranch(rootDir)
-	return s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName)
+	return s.scanProject(ctx, rootDir, cfg, project, orgID, repoUsage, branchName, params)
 }
 
-func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project, orgID string, repoUsage *usage.Usage, branchName string) (*ScanResult, error) {
+func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project, orgID string, repoUsage *usage.Usage, branchName string, params runParamsSnapshot) (*ScanResult, error) {
 	projectPath := filepath.Clean(filepath.Join(rootDir, project.Path))
 	slog.Debug("scanProject: starting", "name", project.Name, "path", projectPath)
 
@@ -349,10 +510,7 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		return nil, fmt.Errorf("unsupported parse result type: %T", pr)
 	}
 
-	currency := s.Currency
-	if currency == "" {
-		currency = "USD"
-	}
+	currency := s.CurrencyOrDefault()
 
 	pricingEndpoint := s.PricingEndpoint
 	if pricingEndpoint == "" {
@@ -364,7 +522,7 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		return nil, fmt.Errorf("authentication: %w", err)
 	}
 
-	isProduction := evaluateProductionFilters(s.productionFilters, s.repositoryName, branchName, project.Name)
+	isProduction := evaluateProductionFilters(params.productionFilters, params.repositoryName, branchName, project.Name)
 
 	// Load project-level usage (overlay on top of repo-level).
 	projectUsage := repoUsage
@@ -375,7 +533,7 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 			if err != nil {
 				slog.Warn("scanProject: failed to open project usage file", "path", usagePath, "error", err)
 			} else {
-				usageDefaults := loadUsageDefaults(s.usageDefaults, project.Name)
+				usageDefaults := loadUsageDefaults(params.usageDefaults, project.Name)
 				u, err := loadUsageData(f, usageDefaults)
 				_ = f.Close()
 				if err == nil {
@@ -404,11 +562,11 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 			EnableEnvironmentalMetrics: true,
 		},
 		FinopsPolicyConfig: &provider.FinopsPolicyConfiguration{
-			Policies: s.finopsPolicies,
+			Policies: params.finopsPolicies,
 		},
 		Settings: &provider.Settings{
 			Currency:      currency,
-			UseDiskCaches: true,
+			UseDiskCaches: useDiskCaches(currency),
 		},
 		Infracost: &provider.Infracost{
 			ApiKey:             token,
@@ -433,9 +591,16 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		result.Errors = append(result.Errors, provErrs...)
 	}
 
+	exchangeRate, err := s.currencyExchangeRate(ctx, currency, token)
+	if err != nil {
+		msg := fmt.Sprintf("currency exchange rate for %s: %v", currency, err)
+		exchangeRate = s.fallbackExchangeRate(currency)
+		s.logWarn("currencyExchangeRate: using USD fallback rate", map[string]any{"currency": currency, "rate": exchangeRate.String(), "error": err.Error()})
+		result.Errors = append(result.Errors, msg)
+	}
 	result.Resources = make([]ResourceResult, 0, len(allResources))
 	for _, r := range allResources {
-		monthlyCost, components := resourceCost(r)
+		monthlyCost, components := resourceCost(r, exchangeRate)
 
 		rr := ResourceResult{
 			Name:           r.Name,
@@ -503,14 +668,14 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		})
 	}
 
-	result.Violations = convertFinopsViolations(allFinops, allResources, rootDir, srcLocs)
+	result.Violations = convertFinopsViolations(allFinops, allResources, rootDir, srcLocs, currency, exchangeRate)
 
 	if len(result.Violations) > 0 && s.HasTokenSource() && orgID != "" {
-		s.attachPolicyDetails(ctx, orgID, result.Violations)
+		s.attachPolicyDetails(ctx, orgID, result.Violations, currency)
 	}
 
-	if len(s.tagPolicies) > 0 {
-		tagResults := goprotoevent.TagPolicies(s.tagPolicies).EvaluateAgainstResources(allResources, input.ProjectInfo)
+	if len(params.tagPolicies) > 0 {
+		tagResults := goprotoevent.TagPolicies(params.tagPolicies).EvaluateAgainstResources(allResources, input.ProjectInfo)
 		result.TagViolations = convertTagViolations(tagResults, allResources, rootDir, srcLocs)
 		slog.Debug("scanProject: tag policy evaluation", "results", len(tagResults), "violations", len(result.TagViolations))
 	}
@@ -518,8 +683,9 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	return result, nil
 }
 
-func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violations []FinopsViolation) {
+func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violations []FinopsViolation, currency string) {
 	var uncached []string
+	s.policyDetailMu.RLock()
 	for _, v := range violations {
 		if v.PolicySlug == "" {
 			continue
@@ -528,6 +694,7 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 			uncached = append(uncached, v.PolicySlug)
 		}
 	}
+	s.policyDetailMu.RUnlock()
 
 	if len(uncached) > 0 {
 		client := dashboard.NewClient(s.HTTPClient, s.DashboardEndpoint)
@@ -536,20 +703,25 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 			slog.Warn("attachPolicyDetails: failed to fetch policy details", "error", err)
 			return
 		}
+		s.policyDetailMu.Lock()
 		for slug, pd := range details {
 			s.policyDetailCache[slug] = pd
 		}
+		s.policyDetailMu.Unlock()
 	}
 
+	s.policyDetailMu.RLock()
 	for i := range violations {
 		if pd, ok := s.policyDetailCache[violations[i].PolicySlug]; ok {
 			pd := pd // copy for pointer
 			violations[i].PolicyDetail = &pd
-			violations[i].Markdown = buildViolationMarkdown(violations[i])
+			violations[i].Markdown = buildViolationMarkdownCurrency(violations[i], currency)
 		}
 	}
+	totalCached := len(s.policyDetailCache)
+	s.policyDetailMu.RUnlock()
 
-	slog.Debug("attachPolicyDetails: attached", "uncached", len(uncached), "total_cached", len(s.policyDetailCache))
+	slog.Debug("attachPolicyDetails: attached", "uncached", len(uncached), "total_cached", totalCached)
 }
 
 func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, input *provider.Input) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
@@ -917,11 +1089,15 @@ func buildTagViolationMessage(v TagViolation) string {
 	return strings.Join(parts, "; ")
 }
 
-func convertFinopsViolations(finops []*provider.FinopsPolicyResult, resources []*provider.Resource, projectPath string, srcLocs map[string]sourceLocation) []FinopsViolation {
+func convertFinopsViolations(finops []*provider.FinopsPolicyResult, resources []*provider.Resource, projectPath string, srcLocs map[string]sourceLocation, currency string, exchangeRate *rat.Rat) []FinopsViolation {
 	resourceMeta := make(map[string]*provider.ResourceMetadata, len(resources))
+	resourcesWithHardcodedPrices := make(map[string]struct{}, len(resources))
 	for _, r := range resources {
 		if r.Metadata != nil {
 			resourceMeta[r.Name] = r.Metadata
+		}
+		if resourceHasHardcodedPrice(r) {
+			resourcesWithHardcodedPrices[r.Name] = struct{}{}
 		}
 	}
 
@@ -929,6 +1105,10 @@ func convertFinopsViolations(finops []*provider.FinopsPolicyResult, resources []
 	for _, fp := range finops {
 		for _, fr := range fp.FailingResources {
 			for _, issue := range fr.Issues {
+				monthlySavings := rat.FromProto(issue.MonthlySavings)
+				if _, ok := resourcesWithHardcodedPrices[fr.CauseAddress]; ok && exchangeRate != nil && monthlySavings != nil {
+					monthlySavings = monthlySavings.Mul(exchangeRate)
+				}
 				v := FinopsViolation{
 					PolicyID:         fp.PolicyId,
 					PolicyName:       fp.PolicyName,
@@ -937,12 +1117,12 @@ func convertFinopsViolations(finops []*provider.FinopsPolicyResult, resources []
 					Message:          issue.Description,
 					Address:          fr.CauseAddress,
 					Attribute:        issue.Attribute,
-					MonthlySavings:   rat.FromProto(issue.MonthlySavings),
+					MonthlySavings:   monthlySavings,
 				}
 				if issue.SavingsDetails != nil {
 					v.SavingsDetails = *issue.SavingsDetails
 				}
-				v.Markdown = buildViolationMarkdown(v)
+				v.Markdown = buildViolationMarkdownCurrency(v, currency)
 
 				if meta, ok := resourceMeta[fr.CauseAddress]; ok && meta.Filename != "" {
 					v.Filename = resolveFilename(projectPath, meta.Filename)
@@ -960,7 +1140,30 @@ func convertFinopsViolations(finops []*provider.FinopsPolicyResult, resources []
 	return violations
 }
 
+func resourceHasHardcodedPrice(r *provider.Resource) bool {
+	if r == nil {
+		return false
+	}
+	if r.Costs != nil {
+		for _, c := range r.Costs.Components {
+			if c.PriceWasHardcoded {
+				return true
+			}
+		}
+	}
+	for _, child := range r.ChildResources {
+		if resourceHasHardcodedPrice(child) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildViolationMarkdown(v FinopsViolation) string {
+	return buildViolationMarkdownCurrency(v, "USD")
+}
+
+func buildViolationMarkdownCurrency(v FinopsViolation, currency string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s**\n\n", v.PolicyName)
 	fmt.Fprintf(&b, "**Policy:** %s\n", v.PolicySlug)
@@ -978,7 +1181,7 @@ func buildViolationMarkdown(v FinopsViolation) string {
 	fmt.Fprintf(&b, "%s\n\n", htmlToMarkdown(v.Message))
 
 	if v.MonthlySavings != nil && !v.MonthlySavings.IsZero() {
-		fmt.Fprintf(&b, "**Potential Savings:** %s/mo\n\n", FormatCost(v.MonthlySavings))
+		fmt.Fprintf(&b, "**Potential Savings:** %s/mo\n\n", FormatCostCurrency(v.MonthlySavings, currency))
 		if v.SavingsDetails != "" {
 			fmt.Fprintf(&b, "%s\n\n", htmlToMarkdown(v.SavingsDetails))
 		}
@@ -1080,10 +1283,408 @@ func htmlToMarkdown(s string) string {
 	return reHTMLTag.ReplaceAllString(s, "")
 }
 
-// FormatCost formats a rat.Rat as a dollar string like "$1.23".
-func FormatCost(cost *rat.Rat) string {
-	if cost == nil || cost.IsZero() {
-		return "$0.00"
+var supportedCurrencies = map[string]struct{}{
+	"USD": {},
+	"AED": {},
+	"AFN": {},
+	"ALL": {},
+	"AMD": {},
+	"ANG": {},
+	"AOA": {},
+	"ARS": {},
+	"AUD": {},
+	"AWG": {},
+	"AZN": {},
+	"BAM": {},
+	"BBD": {},
+	"BDT": {},
+	"BGN": {},
+	"BHD": {},
+	"BIF": {},
+	"BMD": {},
+	"BND": {},
+	"BOB": {},
+	"BRL": {},
+	"BSD": {},
+	"BTN": {},
+	"BWP": {},
+	"BYN": {},
+	"BZD": {},
+	"CAD": {},
+	"CDF": {},
+	"CHF": {},
+	"CLF": {},
+	"CLP": {},
+	"CNY": {},
+	"COP": {},
+	"CRC": {},
+	"CUC": {},
+	"CUP": {},
+	"CVE": {},
+	"CZK": {},
+	"DJF": {},
+	"DKK": {},
+	"DOP": {},
+	"DZD": {},
+	"EGP": {},
+	"ERN": {},
+	"ETB": {},
+	"EUR": {},
+	"FJD": {},
+	"FKP": {},
+	"GBP": {},
+	"GEL": {},
+	"GGP": {},
+	"GHS": {},
+	"GIP": {},
+	"GMD": {},
+	"GNF": {},
+	"GTQ": {},
+	"GYD": {},
+	"HKD": {},
+	"HNL": {},
+	"HRK": {},
+	"HTG": {},
+	"HUF": {},
+	"IDR": {},
+	"ILS": {},
+	"IMP": {},
+	"INR": {},
+	"IQD": {},
+	"IRR": {},
+	"ISK": {},
+	"JEP": {},
+	"JMD": {},
+	"JOD": {},
+	"JPY": {},
+	"KES": {},
+	"KGS": {},
+	"KHR": {},
+	"KMF": {},
+	"KPW": {},
+	"KRW": {},
+	"KWD": {},
+	"KYD": {},
+	"KZT": {},
+	"LAK": {},
+	"LBP": {},
+	"LKR": {},
+	"LRD": {},
+	"LSL": {},
+	"LYD": {},
+	"MAD": {},
+	"MDL": {},
+	"MKD": {},
+	"MMK": {},
+	"MNT": {},
+	"MOP": {},
+	"MUR": {},
+	"MVR": {},
+	"MWK": {},
+	"MXN": {},
+	"MYR": {},
+	"MZN": {},
+	"NAD": {},
+	"NGN": {},
+	"NIO": {},
+	"NOK": {},
+	"NPR": {},
+	"NZD": {},
+	"OMR": {},
+	"PAB": {},
+	"PEN": {},
+	"PGK": {},
+	"PHP": {},
+	"PKR": {},
+	"PLN": {},
+	"PYG": {},
+	"QAR": {},
+	"RON": {},
+	"RSD": {},
+	"RUB": {},
+	"RWF": {},
+	"SAR": {},
+	"SBD": {},
+	"SCR": {},
+	"SDG": {},
+	"SEK": {},
+	"SGD": {},
+	"SHP": {},
+	"SLL": {},
+	"SOS": {},
+	"SRD": {},
+	"SSP": {},
+	"STD": {},
+	"SVC": {},
+	"SYP": {},
+	"SZL": {},
+	"THB": {},
+	"TJS": {},
+	"TMT": {},
+	"TND": {},
+	"TOP": {},
+	"TRY": {},
+	"TTD": {},
+	"TWD": {},
+	"TZS": {},
+	"UAH": {},
+	"UGX": {},
+	"UYU": {},
+	"UZS": {},
+	"VND": {},
+	"VUV": {},
+	"WST": {},
+	"XAF": {},
+	"XAG": {},
+	"XAU": {},
+	"XCD": {},
+	"XDR": {},
+	"XPF": {},
+	"YER": {},
+	"ZAR": {},
+	"ZMW": {},
+}
+
+var currencySymbols = map[string]string{
+	"USD": "$",
+	"AUD": "A$",
+	"BRL": "R$",
+	"CAD": "C$",
+	"CHF": "CHF ",
+	"CNY": "¥",
+	"DKK": "kr ",
+	"EUR": "€",
+	"GBP": "£",
+	"HKD": "HK$",
+	"INR": "₹",
+	"JPY": "¥",
+	"KRW": "₩",
+	"NOK": "kr ",
+	"NZD": "NZ$",
+	"SEK": "kr ",
+	"SGD": "S$",
+	"ZAR": "R",
+}
+
+// NormalizeCurrency normalizes an ISO currency code for scanner settings and UI formatting.
+func NormalizeCurrency(currency string) string {
+	return strings.ToUpper(strings.TrimSpace(currency))
+}
+
+func CurrencyOrDefault(currency string) string {
+	currency = NormalizeCurrency(currency)
+	if currency == "" {
+		return "USD"
 	}
-	return fmt.Sprintf("$%.2f", cost.Float64())
+	if _, ok := supportedCurrencies[currency]; !ok {
+		return "USD"
+	}
+	return currency
+}
+
+func useDiskCaches(currency string) bool {
+	return CurrencyOrDefault(currency) == "USD"
+}
+
+func (s *Scanner) logInfo(message string, fields map[string]any) {
+	attrs := make([]any, 0, len(fields)*2)
+	for k, v := range fields {
+		attrs = append(attrs, k, v)
+	}
+	slog.Info(message, attrs...)
+	if s.OnLog != nil {
+		s.OnLog("info", message, fields)
+	}
+}
+
+func (s *Scanner) logWarn(message string, fields map[string]any) {
+	attrs := make([]any, 0, len(fields)*2)
+	for k, v := range fields {
+		attrs = append(attrs, k, v)
+	}
+	slog.Warn(message, attrs...)
+	if s.OnLog != nil {
+		s.OnLog("warn", message, fields)
+	}
+}
+
+func (s *Scanner) currencyExchangeRate(ctx context.Context, currency, token string) (*rat.Rat, error) {
+	currency = CurrencyOrDefault(currency)
+	if currency == "USD" {
+		s.logInfo("currencyExchangeRate: using base currency", map[string]any{"currency": currency})
+		return rat.New(1), nil
+	}
+
+	s.exchangeRateMu.Lock()
+	if s.exchangeRates != nil {
+		if rate, ok := s.exchangeRates[currency]; ok {
+			s.exchangeRateMu.Unlock()
+			s.logInfo("currencyExchangeRate: using cached rate", map[string]any{"currency": currency, "rate": rate.String()})
+			return rate, nil
+		}
+	} else {
+		s.exchangeRates = make(map[string]*rat.Rat)
+	}
+	s.exchangeRateMu.Unlock()
+
+	s.logInfo("currencyExchangeRate: fetching rate", map[string]any{"currency": currency})
+	rate, err := s.fetchCurrencyExchangeRate(ctx, currency, token)
+	if err != nil {
+		return nil, err
+	}
+	if rate == nil || rate.IsZero() {
+		return nil, fmt.Errorf("empty exchange rate")
+	}
+
+	s.exchangeRateMu.Lock()
+	s.exchangeRates[currency] = rate
+	s.exchangeRateMu.Unlock()
+	s.logInfo("currencyExchangeRate: fetched rate", map[string]any{"currency": currency, "rate": rate.String()})
+	return rate, nil
+}
+
+func (s *Scanner) fetchCurrencyExchangeRate(ctx context.Context, currency, token string) (*rat.Rat, error) {
+	endpoint := s.PricingEndpoint
+	if endpoint == "" {
+		endpoint = "https://pricing.api.infracost.io"
+	}
+	url := strings.TrimRight(endpoint, "/") + "/graphql"
+
+	body, err := json.Marshal(map[string]any{
+		"query": fmt.Sprintf(`query CurrencyExchangeRate {
+  products(filter: {vendorName: "aws", service: "AmazonS3", productFamily: "Storage", region: "us-east-1"}) {
+    prices(filter: {unit: "GB-Mo"}) {
+      USD
+      %s
+    }
+  }
+}`, currency),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" && s.HTTPClient == nil {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := s.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	s.logInfo("currencyExchangeRate: sending request", map[string]any{"currency": currency, "url": url})
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logWarn("currencyExchangeRate: request failed", map[string]any{"currency": currency, "url": url, "error": err.Error()})
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	s.logInfo("currencyExchangeRate: response received", map[string]any{"currency": currency, "status": resp.Status})
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.logWarn("currencyExchangeRate: error response body", map[string]any{"currency": currency, "status": resp.Status, "body": truncateLogString(string(respBody), 1000)})
+		return nil, fmt.Errorf("pricing API status: %s", resp.Status)
+	}
+
+	var out struct {
+		Data struct {
+			Products []struct {
+				Prices []map[string]json.RawMessage `json:"prices"`
+			} `json:"products"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Errors) > 0 {
+		s.logWarn("currencyExchangeRate: graphql error", map[string]any{"currency": currency, "error": out.Errors[0].Message})
+		return nil, fmt.Errorf("pricing API error: %s", out.Errors[0].Message)
+	}
+	for _, product := range out.Data.Products {
+		for _, price := range product.Prices {
+			usd, err := parseExchangeRate(price["USD"])
+			if err != nil || usd == nil || usd.IsZero() {
+				continue
+			}
+			target, err := parseExchangeRate(price[currency])
+			if err != nil || target == nil || target.IsZero() {
+				continue
+			}
+			return target.Div(usd), nil
+		}
+	}
+	return nil, fmt.Errorf("pricing API returned no usable %s prices for exchange rate", currency)
+}
+
+func truncateLogString(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "…"
+}
+
+func (s *Scanner) fallbackExchangeRate(_ string) *rat.Rat {
+	return rat.New(1)
+}
+
+func parseExchangeRate(raw json.RawMessage) (*rat.Rat, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, fmt.Errorf("empty exchange rate")
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return rat.NewFromString(s)
+	}
+
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, err
+	}
+	return rat.NewFromString(strconv.FormatFloat(f, 'f', -1, 64))
+}
+
+// FormatCost formats a rat.Rat as a USD string like "$1.23".
+func FormatCost(cost *rat.Rat) string {
+	return FormatCostCurrency(cost, "USD")
+}
+
+// FormatCostCurrency formats a rat.Rat as a currency string like "$1.23" or "€1.23".
+func FormatCostCurrency(cost *rat.Rat, currency string) string {
+	amount := 0.0
+	if cost != nil && !cost.IsZero() {
+		amount = cost.Float64()
+	}
+	return formatCurrencyAmount(amount, currency, 2)
+}
+
+// FormatPriceCurrency formats a unit price using four decimal places.
+func FormatPriceCurrency(price *rat.Rat, currency string) string {
+	amount := 0.0
+	if price != nil && !price.IsZero() {
+		amount = price.Float64()
+	}
+	return formatCurrencyAmount(amount, currency, 4)
+}
+
+func formatCurrencyAmount(amount float64, currency string, precision int) string {
+	currency = NormalizeCurrency(currency)
+	if currency == "" {
+		currency = "USD"
+	}
+	if symbol, ok := currencySymbols[currency]; ok {
+		return fmt.Sprintf("%s%.*f", symbol, precision, amount)
+	}
+	return fmt.Sprintf("%s %.*f", currency, precision, amount)
 }

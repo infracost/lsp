@@ -1,9 +1,14 @@
 package scanner
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/go-proto/pkg/rat"
 	"github.com/infracost/proto/gen/go/infracost/provider"
@@ -119,6 +124,155 @@ func TestFormatCost(t *testing.T) {
 	}
 }
 
+func TestFormatCostCurrency(t *testing.T) {
+	tests := []struct {
+		name     string
+		cost     *rat.Rat
+		currency string
+		want     string
+	}{
+		{"eur symbol", rat.New(100), "EUR", "€100.00"},
+		{"gbp symbol", mustRat(t, "1.5"), "gbp", "£1.50"},
+		{"unknown currency falls back to code", rat.New(25), "ABC", "ABC 25.00"},
+		{"empty currency defaults to USD", rat.New(25), "", "$25.00"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatCostCurrency(tt.cost, tt.currency)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestConvertFinopsViolationsConvertsSavingsForHardcodedResource(t *testing.T) {
+	finops := []*provider.FinopsPolicyResult{
+		{
+			PolicyName: "Use cheaper option",
+			FailingResources: []*provider.FinopsPolicyFailingResource{
+				{
+					CauseAddress: "aws_db_instance.my_db",
+					Issues: []*provider.FinopsResourceIssue{
+						{
+							Description:    "Use cheaper option",
+							MonthlySavings: rat.New(100).Proto(),
+						},
+					},
+				},
+			},
+		},
+	}
+	resources := []*provider.Resource{
+		{
+			Name: "aws_db_instance.my_db",
+			Costs: &provider.ResourceCosts{Components: []*provider.CostComponent{
+				{PriceWasHardcoded: true},
+			}},
+		},
+	}
+
+	violations := convertFinopsViolations(finops, resources, "/project", nil, "GBP", mustRat(t, "0.75"))
+
+	require.Len(t, violations, 1)
+	assert.True(t, violations[0].MonthlySavings.Equals(rat.New(75)), "monthly savings = %v", violations[0].MonthlySavings)
+}
+
+func TestResourceCostConvertsHardcodedPrices(t *testing.T) {
+	resource := &provider.Resource{
+		Costs: &provider.ResourceCosts{
+			Components: []*provider.CostComponent{
+				{
+					Name:              "Hardcoded compute",
+					Unit:              "hours",
+					PriceWasHardcoded: true,
+					PeriodPrice: &provider.PeriodPrice{
+						Price:  rat.New(1).Proto(),
+						Period: provider.Period_HOUR,
+					},
+					Quantity: rat.New(1).Proto(),
+				},
+				{
+					Name: "API price already converted",
+					Unit: "months",
+					PeriodPrice: &provider.PeriodPrice{
+						Price:  rat.New(10).Proto(),
+						Period: provider.Period_MONTH,
+					},
+					Quantity: rat.New(1).Proto(),
+				},
+			},
+		},
+	}
+
+	gotCost, gotComponents := resourceCost(resource, mustRat(t, "0.5"))
+
+	assert.True(t, gotCost.Equals(rat.New(375)), "cost = %v", gotCost)
+	require.Len(t, gotComponents, 2)
+	assert.True(t, gotComponents[0].Price.Equals(mustRat(t, "0.5")), "hardcoded price = %v", gotComponents[0].Price)
+	assert.True(t, gotComponents[1].Price.Equals(rat.New(10)), "api price = %v", gotComponents[1].Price)
+}
+
+func TestCurrencyExchangeRateReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	s := &Scanner{PricingEndpoint: server.URL, HTTPClient: server.Client()}
+
+	_, err := s.currencyExchangeRate(context.Background(), "GBP", "token")
+	require.Error(t, err)
+}
+
+func TestCurrencyExchangeRateCachesFetchedRate(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var req struct {
+			Query string `json:"query"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Contains(t, req.Query, "GBP")
+		_, _ = w.Write([]byte(`{"data":{"products":[{"prices":[{"USD":"2","GBP":"1.5"}]}]}}`))
+	}))
+	defer server.Close()
+
+	s := &Scanner{PricingEndpoint: server.URL, HTTPClient: server.Client()}
+
+	rate, err := s.currencyExchangeRate(context.Background(), "GBP", "token")
+	require.NoError(t, err)
+	assert.True(t, rate.Equals(mustRat(t, "0.75")), "rate = %v", rate)
+	_, err = s.currencyExchangeRate(context.Background(), "GBP", "token")
+	require.NoError(t, err)
+	assert.Equal(t, 1, requests)
+}
+
+func TestParseExchangeRate(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want *rat.Rat
+	}{
+		{"string", `"0.7485"`, mustRat(t, "0.7485")},
+		{"number", `0.864`, mustRat(t, "0.864")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseExchangeRate(json.RawMessage(tt.raw))
+			require.NoError(t, err)
+			assert.True(t, got.Equals(tt.want), "rate = %v", got)
+		})
+	}
+}
+
+func TestUseDiskCaches(t *testing.T) {
+	assert.True(t, useDiskCaches("USD"))
+	assert.True(t, useDiskCaches(""))
+	assert.False(t, useDiskCaches("GBP"))
+	assert.False(t, useDiskCaches("EUR"))
+}
+
 func TestResolveFilename(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -214,7 +368,7 @@ func TestResourceCost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotCost, gotComponents := resourceCost(tt.resource)
+			gotCost, gotComponents := resourceCost(tt.resource, rat.New(1))
 			assert.True(t, gotCost.Equals(tt.wantCost), "resourceCost() cost = %v, want %v", gotCost, tt.wantCost)
 			assert.Equal(t, tt.wantComponents, len(gotComponents))
 		})

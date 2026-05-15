@@ -37,6 +37,7 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 	}
 
 	result := s.getMergedResult()
+	currency := s.currency()
 
 	s.mu.RLock()
 	root := s.workspaceRoot
@@ -109,7 +110,7 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 		byFile[relPath].resources = append(byFile[relPath].resources, WorkspaceSummaryResource{
 			Name:         r.Name,
 			Line:         max(0, int(r.StartLine)-1),
-			MonthlyCost:  scanner.FormatCost(r.MonthlyCost),
+			MonthlyCost:  scanner.FormatCostCurrency(r.MonthlyCost, currency),
 			PolicyIssues: policyIssues,
 			TagIssues:    tagIssues,
 		})

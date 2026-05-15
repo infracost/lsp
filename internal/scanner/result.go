@@ -24,11 +24,12 @@ type ResourceResult struct {
 }
 
 type CostComponent struct {
-	Name             string
-	Unit             string
-	Price            *rat.Rat
-	MonthlyQuantity  *rat.Rat
-	TotalMonthlyCost *rat.Rat
+	Name              string
+	Unit              string
+	Price             *rat.Rat
+	MonthlyQuantity   *rat.Rat
+	TotalMonthlyCost  *rat.Rat
+	PriceWasHardcoded bool
 }
 
 // FinopsViolation represents a FinOps policy violation for a resource.
@@ -116,13 +117,13 @@ func applyDiscount(price *rat.Rat, discountRate *rat.Rat) *rat.Rat {
 }
 
 // resourceCost computes the total monthly cost for a provider.Resource.
-func resourceCost(r *provider.Resource) (*rat.Rat, []CostComponent) {
+func resourceCost(r *provider.Resource, exchangeRate *rat.Rat) (*rat.Rat, []CostComponent) {
 	total := rat.Zero
 	var components []CostComponent
 
 	if r.Costs != nil {
 		for _, c := range r.Costs.Components {
-			cc := convertCostComponent(c)
+			cc := convertCostComponent(c, exchangeRate)
 			components = append(components, cc)
 			if cc.TotalMonthlyCost != nil {
 				total = total.Add(cc.TotalMonthlyCost)
@@ -131,7 +132,7 @@ func resourceCost(r *provider.Resource) (*rat.Rat, []CostComponent) {
 	}
 
 	for _, child := range r.ChildResources {
-		childTotal, childComponents := resourceCost(child)
+		childTotal, childComponents := resourceCost(child, exchangeRate)
 		total = total.Add(childTotal)
 		components = append(components, childComponents...)
 	}
@@ -139,13 +140,16 @@ func resourceCost(r *provider.Resource) (*rat.Rat, []CostComponent) {
 	return total, components
 }
 
-func convertCostComponent(c *provider.CostComponent) CostComponent {
+func convertCostComponent(c *provider.CostComponent, exchangeRate *rat.Rat) CostComponent {
 	monthlyQty := rat.Zero
 	price := rat.Zero
 	totalMonthlyCost := rat.Zero
 
 	if c.PeriodPrice != nil {
 		price = applyDiscount(rat.FromProto(c.PeriodPrice.Price), rat.FromProto(c.DiscountRate))
+		if c.PriceWasHardcoded && exchangeRate != nil {
+			price = price.Mul(exchangeRate)
+		}
 		if c.Quantity != nil {
 			monthlyQty = convertQuantityToMonthly(rat.FromProto(c.Quantity), c.PeriodPrice.Period)
 			totalMonthlyCost = price.Mul(monthlyQty)
@@ -153,10 +157,11 @@ func convertCostComponent(c *provider.CostComponent) CostComponent {
 	}
 
 	return CostComponent{
-		Name:             c.Name,
-		Unit:             c.Unit,
-		Price:            price,
-		MonthlyQuantity:  monthlyQty,
-		TotalMonthlyCost: totalMonthlyCost,
+		Name:              c.Name,
+		Unit:              c.Unit,
+		Price:             price,
+		MonthlyQuantity:   monthlyQty,
+		TotalMonthlyCost:  totalMonthlyCost,
+		PriceWasHardcoded: c.PriceWasHardcoded,
 	}
 }

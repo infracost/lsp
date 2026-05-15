@@ -109,6 +109,70 @@ func TestEvaluateGuardrails_IncreaseThresholdTriggered(t *testing.T) {
 	assert.True(t, results[0].Triggered)
 }
 
+func TestEvaluateGuardrails_DedupesGuardrails(t *testing.T) {
+	s := &Scanner{
+		guardrails: []*event.Guardrail{
+			{
+				Id:             "g1",
+				Name:           "Monthly spend limit",
+				Scope:          event.Guardrail_REPO,
+				TotalThreshold: ratProto("1000"),
+			},
+			{
+				Id:             "g1",
+				Name:           "Monthly spend limit",
+				Scope:          event.Guardrail_REPO,
+				TotalThreshold: ratProto("1000"),
+			},
+		},
+	}
+
+	projects := []goprotoevent.ProjectCostInfo{
+		{
+			ProjectName:          "prod",
+			TotalMonthlyCost:     rat.New(1200),
+			PastTotalMonthlyCost: rat.New(800),
+		},
+	}
+
+	results := s.EvaluateGuardrails(projects)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Triggered)
+}
+
+func TestEvaluateGuardrails_ConvertsCurrencyThresholds(t *testing.T) {
+	rate := mustRat(t, "0.75")
+	s := &Scanner{
+		Currency: "GBP",
+		exchangeRates: map[string]*rat.Rat{
+			"GBP": rate,
+		},
+		guardrails: []*event.Guardrail{
+			{
+				Id:                "g1",
+				Name:              "Monthly spend limit",
+				Scope:             event.Guardrail_REPO,
+				TotalThreshold:    ratProto("100"),
+				IncreaseThreshold: ratProto("10"),
+			},
+		},
+	}
+
+	projects := []goprotoevent.ProjectCostInfo{
+		{
+			ProjectName:          "prod",
+			TotalMonthlyCost:     rat.New(80),
+			PastTotalMonthlyCost: rat.New(70),
+		},
+	}
+
+	results := s.EvaluateGuardrails(projects)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Triggered)
+	assert.True(t, results[0].TotalThreshold.Equals(rat.New(75)), "total threshold = %v", results[0].TotalThreshold)
+	assert.True(t, results[0].IncreaseThreshold.Equals(mustRat(t, "7.5")), "increase threshold = %v", results[0].IncreaseThreshold)
+}
+
 func TestEvaluateGuardrails_MultipleProjects(t *testing.T) {
 	s := &Scanner{
 		guardrails: []*event.Guardrail{

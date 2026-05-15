@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/infracost/lsp/internal/api"
+	"github.com/infracost/lsp/internal/scanner"
 )
 
 func TestInitializeCapabilities(t *testing.T) {
@@ -46,6 +48,24 @@ func TestInitializeCapabilities(t *testing.T) {
 	// Server info
 	require.NotNil(t, result.ServerInfo)
 	assert.Equal(t, "infracost-ls", result.ServerInfo.Name)
+}
+
+func TestDidChangeConfigurationCurrency(t *testing.T) {
+	scn := &scanner.Scanner{Currency: "USD"}
+	srv := NewServer(scn, nil, api.NewTokenSource(nil))
+
+	err := srv.DidChangeConfiguration(context.Background(), &lsp.DidChangeConfigurationParams{
+		Settings: map[string]any{
+			"infracost": map[string]any{
+				"currency":                 "eur",
+				"runParamsCacheTTLSeconds": 60,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "EUR", srv.settings.Currency)
+	assert.Equal(t, "EUR", scn.CurrencyOrDefault())
 }
 
 func TestUriToPath_Windows(t *testing.T) {
