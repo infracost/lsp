@@ -129,6 +129,7 @@ func main() {
 	s.Init()
 
 	lspServer := lsp.NewServer(s, eventsClient, tokenSource)
+	s.OnLog = lspServer.SendLog
 
 	// Always capture in-memory LSP traffic and logs so infracost/exportTrace
 	// can produce a support bundle on demand. Capture has no port to bind, so

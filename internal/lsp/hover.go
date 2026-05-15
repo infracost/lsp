@@ -32,6 +32,7 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 
 	reqPath := filepath.Clean(uriToPath(uri))
 	line := int64(params.Position.Line) + 1 // LSP is 0-based, our data is 1-based
+	currency := s.currency()
 
 	// Build violations lookup.
 	violationsByAddr := make(map[string][]scanner.FinopsViolation)
@@ -60,7 +61,7 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 		violations := violationsByAddr[r.Name]
 		tagViolations := tagViolationsByAddr[r.Name]
 
-		md := buildFullHoverMarkdown(r, violations, tagViolations)
+		md := buildFullHoverMarkdown(r, violations, tagViolations, currency)
 		return &lsp.Hover{
 			Contents: lsp.MarkupContent{
 				Kind:  lsp.Markdown,
@@ -94,7 +95,7 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 			}
 		}
 
-		md := buildModuleHoverMarkdown(mc, modResources)
+		md := buildModuleHoverMarkdown(mc, modResources, currency)
 		return &lsp.Hover{
 			Contents: lsp.MarkupContent{
 				Kind:  lsp.Markdown,
@@ -110,11 +111,11 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 	return nil, nil
 }
 
-func buildModuleHoverMarkdown(mc scanner.ModuleCost, resources []scanner.ResourceResult) string {
+func buildModuleHoverMarkdown(mc scanner.ModuleCost, resources []scanner.ResourceResult, currency string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "### %s\n\n", mc.Name)
 	fmt.Fprintf(&b, "**Monthly Cost:** %s/mo (%d %s)\n",
-		scanner.FormatCost(mc.MonthlyCost),
+		scanner.FormatCostCurrency(mc.MonthlyCost, currency),
 		mc.ResourceCount,
 		pluralize(mc.ResourceCount, "resource", "resources"),
 	)
@@ -135,18 +136,18 @@ func buildModuleHoverMarkdown(mc scanner.ModuleCost, resources []scanner.Resourc
 		for _, r := range resources[:3] {
 			// Strip the module prefix for brevity.
 			name := strings.TrimPrefix(r.Name, mc.Name+".")
-			fmt.Fprintf(&b, "| %s | %s |\n", name, scanner.FormatCost(r.MonthlyCost))
+			fmt.Fprintf(&b, "| %s | %s |\n", name, scanner.FormatCostCurrency(r.MonthlyCost, currency))
 		}
 	}
 
 	return b.String()
 }
 
-func buildFullHoverMarkdown(r scanner.ResourceResult, violations []scanner.FinopsViolation, tagViolations []scanner.TagViolation) string {
+func buildFullHoverMarkdown(r scanner.ResourceResult, violations []scanner.FinopsViolation, tagViolations []scanner.TagViolation, currency string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "### %s\n\n", r.Name)
-	fmt.Fprintf(&b, "**Monthly Cost:** %s/mo\n\n", scanner.FormatCost(r.MonthlyCost))
+	fmt.Fprintf(&b, "**Monthly Cost:** %s/mo\n\n", scanner.FormatCostCurrency(r.MonthlyCost, currency))
 
 	if len(r.CostComponents) > 0 {
 		b.WriteString("**Cost Components**\n\n")
@@ -160,12 +161,12 @@ func buildFullHoverMarkdown(r scanner.ResourceResult, violations []scanner.Finop
 			}
 			price := "-"
 			if c.Price != nil && !c.Price.IsZero() {
-				price = fmt.Sprintf("$%.4f", c.Price.Float64())
+				price = scanner.FormatPriceCurrency(c.Price, currency)
 			}
 
 			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
 				c.Name, qty, c.Unit, price,
-				scanner.FormatCost(c.TotalMonthlyCost),
+				scanner.FormatCostCurrency(c.TotalMonthlyCost, currency),
 			)
 		}
 		b.WriteString("\n")

@@ -125,7 +125,7 @@ func (s *Server) CodeAction(_ context.Context, params *lsp.CodeActionParams) ([]
 			if edit := buildAttributeEdit(uri, *fix, v); edit != nil {
 				title := v.Message
 				if v.MonthlySavings != nil && !v.MonthlySavings.IsZero() && s.resourceHasCost(v.Address) {
-					title += fmt.Sprintf(" — saves %s/mo", scanner.FormatCost(v.MonthlySavings))
+					title += fmt.Sprintf(" — saves %s/mo", s.formatCost(v.MonthlySavings))
 				}
 
 				kind := lsp.CodeActionQuickFix

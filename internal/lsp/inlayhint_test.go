@@ -27,6 +27,7 @@ func TestInlayHint(t *testing.T) {
 		modules    []scanner.ModuleCost
 		violations []scanner.FinopsViolation
 		tagViols   []scanner.TagViolation
+		currency   string
 		scanning   bool
 		wantCount  int
 		wantLabels []string
@@ -49,6 +50,22 @@ func TestInlayHint(t *testing.T) {
 			},
 			wantCount:  1,
 			wantLabels: []string{"$25.00/mo"},
+		},
+		{
+			name: "currency setting",
+			resources: []scanner.ResourceResult{
+				{
+					Name:        "aws_instance.web",
+					Filename:    testFile,
+					StartLine:   1,
+					EndLine:     5,
+					MonthlyCost: mustRat("25.00"),
+					IsSupported: true,
+				},
+			},
+			currency:   "EUR",
+			wantCount:  1,
+			wantLabels: []string{"€25.00/mo"},
 		},
 		{
 			name: "unsupported resource",
@@ -151,6 +168,9 @@ func TestInlayHint(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := NewServer(nil, nil, api.NewTokenSource(nil))
+			if tt.currency != "" {
+				srv.settings.Currency = tt.currency
+			}
 
 			if tt.scanning {
 				srv.scanningProjects["test"] = struct{}{}

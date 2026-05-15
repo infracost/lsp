@@ -78,7 +78,7 @@ func TestFinopsViolationToDiagnostic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			diags := finopsViolationToDiagnostic(tt.violation)
+			diags := finopsViolationToDiagnostic(tt.violation, "USD")
 
 			require.Len(t, diags, 1)
 			d := diags[0]

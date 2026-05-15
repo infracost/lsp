@@ -48,6 +48,7 @@ func (s *Server) HandleFileSummary(_ context.Context, params json.RawMessage) (a
 	}
 
 	reqPath := filepath.Clean(uriToPath(p.URI))
+	currency := s.currency()
 
 	// Count policy violations per resource address.
 	policyCounts := make(map[string]int)
@@ -96,7 +97,7 @@ func (s *Server) HandleFileSummary(_ context.Context, params json.RawMessage) (a
 		resources = append(resources, FileSummaryResource{
 			Name:         r.Name,
 			Line:         max(0, int(r.StartLine)-1), // Convert to 0-based for LSP.
-			MonthlyCost:  scanner.FormatCost(r.MonthlyCost),
+			MonthlyCost:  scanner.FormatCostCurrency(r.MonthlyCost, currency),
 			PolicyIssues: policyCounts[r.Name],
 			TagIssues:    tagCounts[r.Name],
 		})

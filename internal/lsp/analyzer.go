@@ -70,6 +70,7 @@ func (s *Server) scheduleAnalyze(uri string) {
 }
 
 func (s *Server) analyze(ctx context.Context, uri string) {
+	scanVersion := s.currentScanVersion()
 	filePath := uriToPath(uri)
 
 	cfg := s.getConfig()
@@ -127,6 +128,10 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 		slog.Info("analyze: scan cancelled after completion", "project", project.Name)
 		return
 	}
+	if !s.isCurrentScanVersion(scanVersion) {
+		slog.Info("analyze: stale scan, discarding", "project", project.Name)
+		return
+	}
 
 	slog.Info("analyze: scan complete",
 		"project", project.Name,
@@ -164,6 +169,7 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 // analyzeFullScan is the fallback when config hasn't been loaded yet.
 // It loads config, caches it, and scans all projects.
 func (s *Server) analyzeFullScan(uri string) {
+	scanVersion := s.currentScanVersion()
 	dir := s.workspaceRoot
 	if dir == "" {
 		path := uriToPath(uri)
@@ -187,12 +193,20 @@ func (s *Server) analyzeFullScan(uri string) {
 		progress.End(ctx, "Failed to load config")
 		return
 	}
+	if !s.isCurrentScanVersion(scanVersion) {
+		slog.Info("analyzeFullScan: stale scan after config load, discarding")
+		return
+	}
 	s.setConfig(cfg)
 
 	totalResources := 0
 	totalViolations := 0
 
 	for i, project := range cfg.Projects {
+		if !s.isCurrentScanVersion(scanVersion) {
+			slog.Info("analyzeFullScan: stale scan before project, discarding")
+			return
+		}
 		pct := (i * 100) / len(cfg.Projects)
 		progress.Report(ctx, fmt.Sprintf("Scanning %s...", project.Name), pct)
 
@@ -207,6 +221,10 @@ func (s *Server) analyzeFullScan(uri string) {
 		if err != nil {
 			slog.Error("analyzeFullScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
 			continue
+		}
+		if !s.isCurrentScanVersion(scanVersion) {
+			slog.Info("analyzeFullScan: stale project scan, discarding", "name", project.Name)
+			return
 		}
 
 		slog.Info("analyzeFullScan: project scanned",
