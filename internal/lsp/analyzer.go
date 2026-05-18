@@ -187,7 +187,7 @@ func (s *Server) analyzeFullScan(uri string) {
 	progress.Begin(ctx, "Scanning workspace")
 	defer progress.End(ctx, "Scan complete")
 
-	cfg, err := scanner.LoadConfig(dir)
+	cfg, err := scanner.LoadConfig(dir, "")
 	if err != nil {
 		slog.Error("analyzeFullScan: failed to load config", "error", err)
 		progress.End(ctx, "Failed to load config")

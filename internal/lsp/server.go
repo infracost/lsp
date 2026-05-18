@@ -420,8 +420,10 @@ func (s *Server) loadConfigAndScan() {
 	progress.Begin(ctx, "Scanning workspace")
 	defer progress.End(ctx, "Scan complete")
 
+	_ = s.scanner.FetchRunParams(ctx, s.workspaceRoot) // Pre-fetch run params to populate cache
+
 	slog.Info("loadConfigAndScan: loading config", "dir", s.workspaceRoot)
-	cfg, err := scanner.LoadConfig(s.workspaceRoot)
+	cfg, err := scanner.LoadConfig(s.workspaceRoot, s.scanner.GetConfigTemplate())
 	if err != nil {
 		slog.Error("loadConfigAndScan: failed to load config", "error", err)
 		progress.End(ctx, "Failed to load config")
@@ -453,7 +455,6 @@ func (s *Server) loadConfigAndScan() {
 			r, e := s.scanner.ScanProject(ctx, s.workspaceRoot, cfg, project)
 			return r, time.Since(start), e
 		}()
-
 		if err != nil {
 			slog.Error("loadConfigAndScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
 			continue
