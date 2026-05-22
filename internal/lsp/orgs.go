@@ -165,6 +165,9 @@ func (s *Server) refreshUserCache(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetching user profile: %w", err)
 	}
+	if user.ID == "" {
+		return fmt.Errorf("fetching user profile: response did not include user id")
+	}
 
 	orgs := make([]auth.CachedOrganization, len(user.Organizations))
 	for i, o := range user.Organizations {

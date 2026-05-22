@@ -30,6 +30,7 @@ func TestTransport_WithToken(t *testing.T) {
 
 	assert.Equal(t, "Bearer my-jwt-token", captured.Get("Authorization"))
 	assert.Contains(t, captured.Get("User-Agent"), "infracost-lsp")
+	assert.Contains(t, captured.Get("X-Infracost-Trace-ID"), "infracost-lsp-")
 }
 
 func TestTransport_WithoutToken(t *testing.T) {
