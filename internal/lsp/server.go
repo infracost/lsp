@@ -152,7 +152,7 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 	go s.checkForUpdate() //nolint:gosec // G118: intentionally outlives request context
 
 	if s.workspaceRoot != "" {
-		go s.loadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
+		go s.validateAuthAndLoadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
 	}
 
 	enabled := true
@@ -410,7 +410,28 @@ func (s *Server) DidSave(_ context.Context, params *lsp.DidSaveTextDocumentParam
 	return nil
 }
 
-// loadConfigAndScan loads the workspace config and runs an initial scan of all projects.
+// validateAuthAndLoadConfigAndScan checks cached auth before the initial scan.
+func (s *Server) validateAuthAndLoadConfigAndScan() {
+	if s.scanner == nil || !s.scanner.HasTokenSource() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.refreshUserCache(ctx); err != nil {
+		slog.Warn("initialize: cached auth is invalid", "error", err)
+		s.clearAuthCache("cached auth validation failed")
+		if s.client != nil {
+			if err := s.client.Notify(ctx, "infracost/logoutComplete", nil); err != nil {
+				slog.Warn("initialize: failed to notify logoutComplete", "error", err)
+			}
+		}
+		return
+	}
+
+	s.loadConfigAndScan()
+}
+
 func (s *Server) loadConfigAndScan() {
 	scanVersion := s.currentScanVersion()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

@@ -26,7 +26,7 @@ func TestPush(t *testing.T) {
 				assert.NotEmpty(t, env["os"])
 				assert.NotEmpty(t, env["arch"])
 				assert.NotEmpty(t, env["installId"])
-				assert.Equal(t, env["id"], env["installId"])
+				assert.NotContains(t, env, "id")
 			},
 		},
 		{

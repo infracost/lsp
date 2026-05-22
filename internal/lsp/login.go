@@ -86,10 +86,13 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 	slog.Info("login: device flow complete")
 	s.tokenSource.Set(tokenSource)
 
-	// Fetch the user's profile and save it to user.json so that infracost/orgs
-	// can return real org data without requiring a separate CLI login.
+	// Fetch the user's profile and save it to user.json so infracost/orgs can
+	// return real org data. Treat a missing profile as an invalid login.
 	if err := s.refreshUserCache(ctx); err != nil {
 		slog.Warn("login: failed to refresh user cache", "error", err)
+		s.clearAuthCache("login profile refresh failed")
+		s.showMessage(ctx, lsp.MessageTypeError, "Infracost login failed: "+err.Error())
+		return
 	}
 
 	if s.client != nil {
@@ -106,17 +109,7 @@ func (s *Server) pollLogin(ctx context.Context, cancel context.CancelFunc, resp 
 // HandleLogout clears the cached token and user/org cache from disk and
 // memory, then notifies the client to show the login screen.
 func (s *Server) HandleLogout(ctx context.Context, _ json.RawMessage) (any, error) {
-	cfg := &auth.Config{}
-	cfg.TokenCachePath = config.TokenCachePath()
-	cfg.UseAccessTokenCache = true
-	if err := cfg.ClearCache(); err != nil {
-		slog.Warn("logout: failed to clear token cache", "error", err)
-	}
-	if err := newAuthConfig().ClearUserCache(); err != nil {
-		slog.Warn("logout: failed to clear user cache", "error", err)
-	}
-	s.tokenSource.Set(nil)
-	slog.Info("logout: token and user cache cleared")
+	s.clearAuthCache("logout")
 
 	if s.client != nil {
 		if err := s.client.Notify(ctx, "infracost/logoutComplete", nil); err != nil {
@@ -124,6 +117,20 @@ func (s *Server) HandleLogout(ctx context.Context, _ json.RawMessage) (any, erro
 		}
 	}
 	return struct{}{}, nil
+}
+
+func (s *Server) clearAuthCache(reason string) {
+	cfg := &auth.Config{}
+	cfg.TokenCachePath = config.TokenCachePath()
+	cfg.UseAccessTokenCache = true
+	if err := cfg.ClearCache(); err != nil {
+		slog.Warn("auth: failed to clear token cache", "reason", reason, "error", err)
+	}
+	if err := newAuthConfig().ClearUserCache(); err != nil {
+		slog.Warn("auth: failed to clear user cache", "reason", reason, "error", err)
+	}
+	s.tokenSource.Set(nil)
+	slog.Info("auth: token and user cache cleared", "reason", reason)
 }
 
 func (s *Server) showMessage(ctx context.Context, typ lsp.MessageType, msg string) {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sync"
@@ -49,11 +50,11 @@ func (s *TokenSource) Valid() bool {
 	return s.ts != nil
 }
 
-// Transport is an http.RoundTripper that adds authentication, User-Agent,
-// and x-infracost-org-id headers to outgoing requests.
+// Transport is an http.RoundTripper that adds User-Agent, trace, and
+// x-infracost-org-id headers to outgoing requests. Authorization is handled by
+// the wrapped OAuth transport.
 type Transport struct {
 	Base  http.RoundTripper
-	ts    *TokenSource
 	orgID atomic.Pointer[string]
 }
 
@@ -63,15 +64,9 @@ func (t *Transport) SetOrgID(id string) {
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	tok, err := t.ts.Token()
-	if err != nil {
-		return nil, fmt.Errorf("getting token: %w", err)
-	}
 	r := req.Clone(req.Context())
-	if tok.AccessToken != "" {
-		r.Header.Set("Authorization", tok.Type()+" "+tok.AccessToken)
-	}
 	r.Header.Set("User-Agent", trace.UserAgent)
+	r.Header.Set("X-Infracost-Trace-ID", trace.ID)
 	if id := t.orgID.Load(); id != nil && *id != "" {
 		r.Header.Set("x-infracost-org-id", *id)
 	}
@@ -82,13 +77,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return base.RoundTrip(r)
 }
 
-// NewHTTPClient creates an *http.Client whose transport adds auth,
-// User-Agent, and x-infracost-org-id headers. Returns both the client and
-// its Transport so callers can update the org ID later via SetOrgID.
+// NewHTTPClient creates an *http.Client whose transport uses oauth2 for auth
+// and adds User-Agent, trace, and x-infracost-org-id headers. Returns both the
+// client and its Transport so callers can update the org ID later via SetOrgID.
 func NewHTTPClient(ts *TokenSource) (*http.Client, *Transport) {
+	oauthClient := oauth2.NewClient(context.Background(), ts)
 	t := &Transport{
-		Base: http.DefaultTransport,
-		ts:   ts,
+		Base: oauthClient.Transport,
 	}
 	return &http.Client{Transport: t}, t
 }

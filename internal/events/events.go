@@ -96,7 +96,6 @@ func init() {
 		"caller":      "infracost-ls",
 		"version":     version.Version,
 		"fullVersion": version.Version,
-		"id":          id,
 		"installId":   id,
 		"os":          runtime.GOOS,
 		"arch":        runtime.GOARCH,
