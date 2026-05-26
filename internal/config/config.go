@@ -80,9 +80,16 @@ func loadAuthToken(ctx context.Context) oauth2.TokenSource {
 		slog.Warn("failed to load auth token cache", "error", err)
 	}
 	if tokenSource == nil {
-		slog.Warn("no access token available — run `infracost login`")
+		slog.Warn("no access token available — run `infracost auth login`")
+		return nil
 	}
-	return tokenSource
+	// The LSP outlives a single oauth refresh token: another process
+	// (a CLI invocation, a web login) can rotate it while we hold a
+	// stale in-memory snapshot. WrapWithReload re-reads the on-disk
+	// cache on invalid_grant so the next request recovers
+	// transparently instead of failing until the language server is
+	// restarted.
+	return cfg.WrapWithReload(ctx, tokenSource)
 }
 
 func loadPluginsConfig() cliplugins.Config {
