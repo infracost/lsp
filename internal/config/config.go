@@ -20,7 +20,9 @@ type Config struct {
 
 	TokenSource       oauth2.TokenSource
 	DashboardEndpoint string
-	Plugins           cliplugins.Config
+	// Plugins is a pointer because cliplugins.Config carries mutexes and a
+	// sync.Once for plugin-manager state, so it must never be copied by value.
+	Plugins *cliplugins.Config
 }
 
 func Load(ctx context.Context) Config {
@@ -92,12 +94,12 @@ func loadAuthToken(ctx context.Context) oauth2.TokenSource {
 	return cfg.WrapWithReload(ctx, tokenSource)
 }
 
-func loadPluginsConfig() cliplugins.Config {
-	cfg := cliplugins.Config{
-		AutoUpdate:  true,
-		ManifestURL: "https://releases.infracost.io/plugins/manifest.json",
+func loadPluginsConfig() *cliplugins.Config {
+	cfg := &cliplugins.Config{
+		AutoUpdate: true,
+		BaseURL:    "https://releases.infracost.io",
 	}
-	loadPluginEnv(&cfg)
+	loadPluginEnv(cfg)
 	cfg.Process()
 	return cfg
 }
@@ -127,8 +129,11 @@ func loadPluginEnv(c *cliplugins.Config) {
 	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION"); v != "" {
 		c.Providers.AzureVersion = v
 	}
-	if v := os.Getenv("INFRACOST_CLI_PLUGIN_MANIFEST_URL"); v != "" {
-		c.ManifestURL = v
+	if os.Getenv("INFRACOST_CLI_PLUGIN_MANIFEST_URL") != "" {
+		slog.Warn("INFRACOST_CLI_PLUGIN_MANIFEST_URL is deprecated and ignored; set INFRACOST_CLI_PLUGIN_BASE_URL to the release bucket root instead")
+	}
+	if v := os.Getenv("INFRACOST_CLI_PLUGIN_BASE_URL"); v != "" {
+		c.BaseURL = v
 	}
 	if v := os.Getenv("INFRACOST_CLI_PLUGIN_CACHE_DIRECTORY"); v != "" {
 		c.Cache = v

@@ -13,14 +13,10 @@ import (
 
 	"github.com/owenrumney/go-lsp/server"
 
-	proto "github.com/infracost/proto/gen/go/infracost/provider"
-
 	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/config"
 	"github.com/infracost/lsp/internal/events"
 	"github.com/infracost/lsp/internal/lsp"
-	"github.com/infracost/lsp/internal/plugins/parser"
-	"github.com/infracost/lsp/internal/plugins/providers"
 	"github.com/infracost/lsp/internal/scanner"
 	"github.com/infracost/lsp/internal/update"
 	"github.com/infracost/lsp/version"
@@ -66,10 +62,6 @@ func main() {
 		Level: cfg.SlogLevel,
 	})))
 
-	if err := config.EnsureParserPlugin(&cfg.Plugins); err != nil {
-		log.Fatalf("ensuring parser plugin: %v", err)
-	}
-
 	tokenSource := api.NewTokenSource(cfg.TokenSource)
 	httpClient, apiTransport := api.NewHTTPClient(tokenSource)
 	eventsClient := events.NewClient(httpClient, cfg.PricingEndpoint)
@@ -82,21 +74,8 @@ func main() {
 		}
 	}()
 
-	parserClient := parser.PluginClient{
-		Plugin:  cfg.Plugins.Parser.Plugin,
-		Version: cfg.Plugins.Parser.Version,
-	}
-	providerClient := providers.PluginClient{
-		AWS:           cfg.Plugins.Providers.AWS,
-		Google:        cfg.Plugins.Providers.Google,
-		Azure:         cfg.Plugins.Providers.Azure,
-		AWSVersion:    cfg.Plugins.Providers.AWSVersion,
-		GoogleVersion: cfg.Plugins.Providers.GoogleVersion,
-		AzureVersion:  cfg.Plugins.Providers.AzureVersion,
-	}
-
 	slog.Info("starting infracost-ls",
-		"parser_plugin", parserClient.Plugin,
+		"parser_plugin", cfg.Plugins.Parser.Plugin,
 		"currency", cfg.Currency,
 		"pricing_endpoint", cfg.PricingEndpoint,
 		"has_token_source", cfg.TokenSource != nil,
@@ -105,8 +84,7 @@ func main() {
 	)
 
 	s := &scanner.Scanner{
-		Parser:            &parserClient,
-		Provider:          &providerClient,
+		Plugins:           cfg.Plugins,
 		Currency:          cfg.Currency,
 		PricingEndpoint:   cfg.PricingEndpoint,
 		DashboardEndpoint: cfg.DashboardEndpoint,
@@ -115,15 +93,6 @@ func main() {
 		OnOrgID: func(id string) {
 			apiTransport.SetOrgID(id)
 			events.RegisterMetadata("orgId", id)
-		},
-		EnsureProvider: func(p proto.Provider) error {
-			if err := config.EnsureProviderPlugin(&cfg.Plugins, p); err != nil {
-				return err
-			}
-			providerClient.AWS = cfg.Plugins.Providers.AWS
-			providerClient.Google = cfg.Plugins.Providers.Google
-			providerClient.Azure = cfg.Plugins.Providers.Azure
-			return nil
 		},
 	}
 	s.Init()
@@ -180,7 +149,7 @@ func runDebug() {
 	fmt.Printf("\nEndpoints:\n")
 	fmt.Printf("  pricing:   %s\n", cfg.PricingEndpoint)
 	fmt.Printf("  dashboard: %s\n", cfg.DashboardEndpoint)
-	fmt.Printf("  plugins:   %s\n", cfg.Plugins.ManifestURL)
+	fmt.Printf("  plugins:   %s\n", cfg.Plugins.BaseURL)
 	fmt.Printf("  releases:  https://api.github.com/repos/infracost/lsp/releases/latest\n")
 
 	fmt.Printf("\nChecking for updates...\n")
