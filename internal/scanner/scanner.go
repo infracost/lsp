@@ -7,47 +7,47 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
+	cliplugins "github.com/infracost/cli/pkg/plugins"
 	repoconfig "github.com/infracost/config"
+	"github.com/infracost/go-proto/pkg/address"
 	"github.com/infracost/go-proto/pkg/diagnostic"
 	goprotoevent "github.com/infracost/go-proto/pkg/event"
 	providerconv "github.com/infracost/go-proto/pkg/providers"
 	"github.com/infracost/go-proto/pkg/rat"
+	treeresource "github.com/infracost/go-proto/pkg/tree/resource"
 	parserapi "github.com/infracost/proto/gen/go/infracost/parser/api"
-	"github.com/infracost/proto/gen/go/infracost/parser/cloudformation"
 	"github.com/infracost/proto/gen/go/infracost/parser/event"
 	"github.com/infracost/proto/gen/go/infracost/parser/options"
-	"github.com/infracost/proto/gen/go/infracost/parser/terraform"
+	pluginpb "github.com/infracost/proto/gen/go/infracost/plugin"
 	"github.com/infracost/proto/gen/go/infracost/provider"
+	treepb "github.com/infracost/proto/gen/go/infracost/tree"
+	"github.com/infracost/proto/gen/go/infracost/usage"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/infracost/proto/gen/go/infracost/usage"
-
 	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/dashboard"
-	"github.com/infracost/lsp/internal/plugins/parser"
-	"github.com/infracost/lsp/internal/plugins/providers"
 	"github.com/infracost/lsp/internal/vcs"
 )
 
 // Scanner orchestrates parsing and pricing of IaC projects.
 type Scanner struct {
-	Parser            *parser.PluginClient
-	Provider          *providers.PluginClient
-	EnsureProvider    func(provider.Provider) error
+	// Plugins owns the full parser/provider plugin lifecycle (S3 download,
+	// connect, client caching, and reconnect-on-error), delegated to the CLI.
+	Plugins           *cliplugins.Config
 	Currency          string
 	PricingEndpoint   string
 	DashboardEndpoint string
@@ -129,8 +129,8 @@ func (s *Scanner) SetCurrency(currency string) bool {
 	s.exchangeRates = nil
 	s.exchangeRateMu.Unlock()
 
-	if s.Provider != nil {
-		s.Provider.Close()
+	if s.Plugins != nil {
+		s.Plugins.Providers.Close()
 	}
 	return true
 }
@@ -369,8 +369,9 @@ func (s *Scanner) cachedExchangeRate(currency string) *rat.Rat {
 
 // Close kills all persistent plugin subprocesses.
 func (s *Scanner) Close() {
-	s.Parser.Close()
-	s.Provider.Close()
+	if s.Plugins != nil {
+		s.Plugins.Close()
+	}
 }
 
 // LoadConfig loads or auto-generates an infracost config for the given directory.
@@ -462,8 +463,10 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	projectPath := filepath.Clean(filepath.Join(rootDir, project.Path))
 	slog.Debug("scanProject: starting", "name", project.Name, "path", projectPath)
 
+	projectType := finalProjectType(project.Type, projectPath)
+
 	parseStart := time.Now()
-	parseResp, err := s.parse(ctx, projectPath, cfg, project, rootDir)
+	parseResp, err := s.parse(ctx, projectPath, cfg, project, rootDir, projectType, params.finopsPolicies)
 	parseDuration := time.Since(parseStart)
 
 	result := &ScanResult{}
@@ -490,25 +493,20 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	}
 	slog.Debug("scanProject: parse complete", "path", projectPath, "elapsed", parseDuration)
 
-	if parseResp.Result == nil {
-		return nil, fmt.Errorf("parser returned no result")
+	if parseResp == nil || parseResp.Tree == nil {
+		return nil, fmt.Errorf("parser returned no tree")
+	}
+	tree := parseResp.Tree
+
+	requiredProviders := GetRequiredProvidersFromTree(tree)
+	if len(requiredProviders) == 0 && projectType == repoconfig.ProjectTypeCloudFormation {
+		requiredProviders = []provider.Provider{provider.Provider_PROVIDER_AWS}
 	}
 
-	var requiredProviders []provider.Provider
 	srcLocs := make(map[string]sourceLocation)
 	modLocs := make(map[string]sourceLocation)
-	switch pr := parseResp.Result.Value.(type) {
-	case *parserapi.ParseResponseResult_Terraform:
-		rps := make(map[provider.Provider]struct{})
-		getRequiredProviders(pr.Terraform, rps)
-		requiredProviders = slices.Collect(maps.Keys(rps))
-		getSourceLocations(pr.Terraform, "", srcLocs, modLocs)
-		slog.Debug("scanProject: source locations", "count", len(srcLocs), "module_locations", len(modLocs), "providers", requiredProviders)
-	case *parserapi.ParseResponseResult_Cloudformation:
-		requiredProviders = []provider.Provider{provider.Provider_PROVIDER_AWS}
-	default:
-		return nil, fmt.Errorf("unsupported parse result type: %T", pr)
-	}
+	collectTreeSourceLocations(tree, srcLocs, modLocs)
+	slog.Debug("scanProject: source locations", "count", len(srcLocs), "module_locations", len(modLocs), "providers", requiredProviders)
 
 	currency := s.CurrencyOrDefault()
 
@@ -545,8 +543,8 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		}
 	}
 
-	input := &provider.Input{
-		ParseResult:  parseResp,
+	input := &provider.TreeInput{
+		Tree:         tree,
 		AbsolutePath: projectPath,
 		Usage:        projectUsage,
 		ProjectInfo: &provider.ProjectInfo{
@@ -575,8 +573,21 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		},
 	}
 
-	var allResources []*provider.Resource
+	allResources := make([]*provider.Resource, 0, len(tree.GetUnsupportedResources()))
 	var allFinops []*provider.FinopsPolicyResult
+
+	// Parser-flagged unsupported resources never reach a provider, but tag
+	// policies still evaluate against them, so seed the result set here.
+	for _, res := range tree.GetUnsupportedResources() {
+		pr := treeresource.ProtoToProviderResource(res)
+		if pr == nil {
+			continue
+		}
+		if pr.IsFree {
+			pr.IsSupported = true
+		}
+		allResources = append(allResources, pr)
+	}
 
 	for _, rp := range requiredProviders {
 		rs, ps, provErrs := s.processProvider(ctx, rp, input)
@@ -724,176 +735,328 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 	slog.Debug("attachPolicyDetails: attached", "uncached", len(uncached), "total_cached", totalCached)
 }
 
-func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, input *provider.Input) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
+func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
 	name := providerconv.FromProto(prov)
-	if s.EnsureProvider != nil {
-		if err := s.EnsureProvider(prov); err != nil {
-			slog.Error("processProvider: failed to ensure plugin", "provider", name, "error", err)
-			return nil, nil, []string{fmt.Sprintf("ensuring %s provider: %v", name, err)}
-		}
+
+	loader := s.providerLoader(prov)
+	if loader == nil {
+		return nil, nil, []string{fmt.Sprintf("unknown provider: %s", name)}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	loadStart := time.Now()
-	client, err := s.Provider.Load(prov)
-	loadDuration := time.Since(loadStart)
-	if err != nil {
-		slog.Error("processProvider: failed to load plugin", "provider", name, "error", err, "elapsed", loadDuration)
-		return nil, nil, []string{fmt.Sprintf("loading %s provider: %v", name, err)}
-	}
-	slog.Debug("processProvider: plugin loaded", "provider", name, "elapsed", loadDuration)
-
+	// ProcessTreeInput owns plugin loading, response caching, and
+	// reconnect-on-error (the cached client is evicted when a call fails).
 	processStart := time.Now()
-	resp, err := client.Process(ctx, &provider.ProcessRequest{Input: input})
+	rs, ps, err := s.Plugins.Providers.ProcessTreeInput(ctx, prov, input, loader, s.hclogLevel())
 	processDuration := time.Since(processStart)
 	if err != nil {
-		if isTransportError(err) {
-			slog.Warn("processProvider: transport error, reconnecting", "provider", name, "error", err)
-			client, err = s.Provider.Reconnect(prov)
-			if err != nil {
-				return nil, nil, []string{fmt.Sprintf("reconnecting %s provider: %v", name, err)}
-			}
-			resp, err = client.Process(ctx, &provider.ProcessRequest{Input: input})
-			processDuration = time.Since(processStart)
-			if err != nil {
-				slog.Error("processProvider: Process failed after reconnect", "provider", name, "error", err, "elapsed", processDuration)
-				return nil, nil, []string{fmt.Sprintf("%s provider error: %v", name, err)}
-			}
-		} else {
-			slog.Error("processProvider: Process failed", "provider", name, "error", err, "elapsed", processDuration)
-			return nil, nil, []string{fmt.Sprintf("%s provider error: %v", name, err)}
-		}
+		slog.Error("processProvider: Process failed", "provider", name, "error", err, "elapsed", processDuration)
+		return nil, nil, []string{fmt.Sprintf("%s provider error: %v", name, err)}
 	}
 
-	slog.Debug("processProvider: complete", "provider", name, "resources", len(resp.Output.Resources), "finops", len(resp.Output.FinopsResults), "elapsed", processDuration)
-	return resp.Output.Resources, resp.Output.FinopsResults, nil
+	slog.Debug("processProvider: complete", "provider", name, "resources", len(rs), "finops", len(ps), "elapsed", processDuration)
+	return rs, ps, nil
 }
 
-func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config, project *repoconfig.Project, rootDir string) (*parserapi.ParseResponse, error) {
+// providerLoader returns the cliplugins loader for the given provider, or nil
+// if the provider is not one we support.
+func (s *Scanner) providerLoader(prov provider.Provider) func(hclog.Level) (pluginpb.ProviderServiceClient, func(), error) {
+	switch prov {
+	case provider.Provider_PROVIDER_AWS:
+		return s.Plugins.Providers.LoadAWS
+	case provider.Provider_PROVIDER_GOOGLE:
+		return s.Plugins.Providers.LoadGoogle
+	case provider.Provider_PROVIDER_AZURERM:
+		return s.Plugins.Providers.LoadAzurerm
+	default:
+		return nil
+	}
+}
+
+// hclogLevel maps the configured slog level onto the hclog level the CLI
+// plugin loaders expect.
+func (s *Scanner) hclogLevel() hclog.Level {
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return hclog.Debug
+	}
+	return hclog.Info
+}
+
+func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config, project *repoconfig.Project, rootDir string, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) (*pluginpb.ParseResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	slog.Debug("parse: loading parser plugin", "plugin_path", s.Parser.Plugin)
-	client, err := s.Parser.Load()
+	pp, err := s.Plugins.ParserPluginForProject(ctx, string(projectType))
 	if err != nil {
-		return nil, fmt.Errorf("loading parser plugin: %w", err)
+		// EnsurePlugins caches its result behind a sync.Once, so a transient
+		// download failure would otherwise stick for the life of the server.
+		// Reset so the next scan retries.
+		s.Plugins.ResetParserPlugins()
+		return nil, fmt.Errorf("loading parser plugin for project type %q: %w", projectType, err)
 	}
 
+	genericOpts := buildGenericOptions(project, rootDir)
+	rawOpts, rawFormat, err := buildIaCOptions(cfg, project, projectType, finopsPolicies)
+	if err != nil {
+		return nil, fmt.Errorf("building parser plugin options: %w", err)
+	}
+
+	slog.Debug("parse: calling Parse", "path", path, "project_name", project.Name, "project_type", projectType)
+
+	req := &pluginpb.ParseRequest{
+		Path:             path,
+		GenericOptions:   genericOpts,
+		RawOptions:       rawOpts,
+		RawOptionsFormat: rawFormat,
+	}
+	resp, err := pp.Parse(ctx, req)
+	if err != nil && isTransportError(err) {
+		slog.Warn("parse: transport error, reconnecting", "error", err)
+		s.Plugins.ResetParserPlugins()
+		pp, err = s.Plugins.ParserPluginForProject(ctx, string(projectType))
+		if err != nil {
+			return nil, fmt.Errorf("reconnecting parser plugin: %w", err)
+		}
+		resp, err = pp.Parse(ctx, req)
+	}
+	if err != nil {
+		slog.Error("parse: Parse failed", "error", err)
+		s.Plugins.ResetParserPlugins()
+		return resp, err
+	}
+
+	slog.Debug("parse: complete", "has_tree", resp != nil && resp.Tree != nil)
+	return resp, nil
+}
+
+// finalProjectType resolves an unknown or CDK project type the same way the CLI
+// scanner does, so the parser plugin can be matched by project type.
+func finalProjectType(projectType repoconfig.ProjectType, absoluteProjectPath string) repoconfig.ProjectType {
+	if projectType == repoconfig.ProjectTypeUnknown {
+		if stat, err := os.Stat(filepath.Join(absoluteProjectPath, "terragrunt.hcl")); err == nil && !stat.IsDir() {
+			return repoconfig.ProjectTypeTerragrunt
+		}
+		if stat, err := os.Stat(filepath.Join(absoluteProjectPath, "terragrunt.hcl.json")); err == nil && !stat.IsDir() {
+			return repoconfig.ProjectTypeTerragrunt
+		}
+		return repoconfig.ProjectTypeTerraform
+	}
+	if strings.HasPrefix(string(projectType), "cdk_") {
+		return repoconfig.ProjectTypeCloudFormation
+	}
+	return projectType
+}
+
+func buildGenericOptions(project *repoconfig.Project, rootDir string) *options.GenericOptions {
 	cacheDir := filepath.Join(os.TempDir(), ".infracost", "cache")
 	_ = os.MkdirAll(cacheDir, 0o700)
 
-	genericOpts := &options.GenericOptions{
+	return &options.GenericOptions{
 		ProjectName:        project.Name,
+		EnvironmentName:    project.EnvName,
 		RepoDirectory:      rootDir,
 		TemporaryDirectory: os.TempDir(),
 		CacheDirectory:     cacheDir,
 		WorkingDirectory:   rootDir,
 	}
+}
 
-	var target *parserapi.ParseRequestTarget
-	switch project.Type {
+func buildIaCOptions(cfg *repoconfig.Config, project *repoconfig.Project, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) ([]byte, string, error) {
+	switch projectType {
+	case repoconfig.ProjectTypeTerraform, repoconfig.ProjectTypeTerragrunt, repoconfig.ProjectTypeCiscoStacks:
+		data, err := json.Marshal(buildTerraformPluginOptions(cfg, project, namingPolicyAttributeRequirements(finopsPolicies)))
+		return data, "application/json", err
 	case repoconfig.ProjectTypeCloudFormation:
-		target = buildCloudFormationTarget(path, project, genericOpts)
+		data, err := json.Marshal(buildCloudFormationPluginOptions(project))
+		return data, "application/json", err
 	default:
-		target = buildTerraformTarget(path, cfg, project, genericOpts)
-	}
-
-	slog.Debug("parse: calling Parse",
-		"path", path,
-		"project_name", project.Name,
-		"project_type", project.Type,
-	)
-
-	resp, err := client.Parse(ctx, &parserapi.ParseRequest{
-		RepoDirectory:    rootDir,
-		WorkingDirectory: rootDir,
-		Target:           target,
-	})
-	if err != nil && isTransportError(err) {
-		slog.Warn("parse: transport error, reconnecting", "error", err)
-		client, err = s.Parser.Reconnect()
-		if err != nil {
-			return nil, fmt.Errorf("reconnecting parser plugin: %w", err)
-		}
-		resp, err = client.Parse(ctx, &parserapi.ParseRequest{
-			RepoDirectory:    rootDir,
-			WorkingDirectory: rootDir,
-			Target:           target,
-		})
-	}
-	if err != nil {
-		slog.Error("parse: Parse failed", "error", err)
-		return resp, err
-	}
-
-	slog.Debug("parse: complete", "has_result", resp.Result != nil)
-	return resp, nil
-}
-
-func buildTerraformTarget(path string, cfg *repoconfig.Config, project *repoconfig.Project, generic *options.GenericOptions) *parserapi.ParseRequestTarget {
-	var regexSourceMap map[string]string
-	if len(cfg.Terraform.SourceMap) > 0 {
-		regexSourceMap = make(map[string]string, len(cfg.Terraform.SourceMap))
-		for _, source := range cfg.Terraform.SourceMap {
-			regexSourceMap[source.Match] = source.Replace
-		}
-	}
-
-	return &parserapi.ParseRequestTarget{
-		Value: &parserapi.ParseRequestTarget_Terraform{
-			Terraform: &terraform.Target{
-				Directory: path,
-				Options: &terraform.Options{
-					Generic:        generic,
-					RegexSourceMap: regexSourceMap,
-					Env:            project.Env,
-					Workspace:      project.Terraform.Workspace,
-					TfVarsFiles:    project.Terraform.VarFiles,
-				},
-			},
-		},
+		return nil, "", nil
 	}
 }
 
-func buildCloudFormationTarget(path string, project *repoconfig.Project, generic *options.GenericOptions) *parserapi.ParseRequestTarget {
-	var awsCtx *cloudformation.AwsContext
-	if project.AWS.AccountID != "" || project.AWS.Region != "" || project.AWS.StackID != "" || project.AWS.StackName != "" {
-		awsCtx = &cloudformation.AwsContext{
-			AccountId: project.AWS.AccountID,
+type terraformPluginOptions struct {
+	RegexSourceMap              map[string]string            `json:"regexSourceMap,omitempty"`
+	Env                         map[string]string            `json:"env,omitempty"`
+	Vars                        map[string]any               `json:"vars,omitempty"`
+	Workspace                   string                       `json:"workspace,omitempty"`
+	TfVarsFiles                 []string                     `json:"tfVarsFiles,omitempty"`
+	TerraformCloudConfiguration *terraformCloudConfiguration `json:"terraformCloudConfiguration,omitempty"`
+	RequiredAttributes          map[string][]string          `json:"requiredAttributes,omitempty"`
+}
+
+type terraformCloudConfiguration struct {
+	Organization string `json:"organization"`
+	Workspace    string `json:"workspace"`
+	Hostname     string `json:"hostname"`
+}
+
+type cloudFormationPluginOptions struct {
+	InputParameters map[string]any `json:"inputParameters"`
+	AWSContext      *awsContext    `json:"awsContext"`
+}
+
+type awsContext struct {
+	Region    string `json:"region"`
+	AccountID string `json:"accountId"`
+	StackID   string `json:"stackId"`
+	StackName string `json:"stackName"`
+}
+
+func buildTerraformPluginOptions(cfg *repoconfig.Config, project *repoconfig.Project, requiredAttributes []*parserapi.AttributeRequirement) *terraformPluginOptions {
+	regexSourceMap := make(map[string]string, len(cfg.Terraform.SourceMap))
+	for _, source := range cfg.Terraform.SourceMap {
+		regexSourceMap[source.Match] = source.Replace
+	}
+
+	var cloudConfig *terraformCloudConfiguration
+	if project.Terraform.Cloud.Org != "" || project.Terraform.Cloud.Workspace != "" || project.Terraform.Cloud.Host != "" {
+		cloudConfig = &terraformCloudConfiguration{
+			Organization: project.Terraform.Cloud.Org,
+			Workspace:    project.Terraform.Cloud.Workspace,
+			Hostname:     project.Terraform.Cloud.Host,
+		}
+	}
+
+	tfRequiredAttributes := make(map[string][]string, len(requiredAttributes))
+	for _, attr := range requiredAttributes {
+		tfRequiredAttributes[attr.ResourceType] = attr.Attributes
+	}
+
+	return &terraformPluginOptions{
+		RegexSourceMap:              regexSourceMap,
+		Env:                         project.Env,
+		Vars:                        project.Terraform.Vars,
+		Workspace:                   project.Terraform.Workspace,
+		TfVarsFiles:                 project.Terraform.VarFiles,
+		TerraformCloudConfiguration: cloudConfig,
+		RequiredAttributes:          tfRequiredAttributes,
+	}
+}
+
+func buildCloudFormationPluginOptions(project *repoconfig.Project) *cloudFormationPluginOptions {
+	var awsCtx *awsContext
+	if project.AWS.Region != "" || project.AWS.AccountID != "" || project.AWS.StackID != "" || project.AWS.StackName != "" {
+		awsCtx = &awsContext{
 			Region:    project.AWS.Region,
-			StackId:   project.AWS.StackID,
+			AccountID: project.AWS.AccountID,
+			StackID:   project.AWS.StackID,
 			StackName: project.AWS.StackName,
 		}
 	}
 
-	return &parserapi.ParseRequestTarget{
-		Value: &parserapi.ParseRequestTarget_Cloudformation{
-			Cloudformation: &cloudformation.Target{
-				TemplatePath: path,
-				Options: &cloudformation.Options{
-					Generic:    generic,
-					AwsContext: awsCtx,
-				},
-			},
-		},
+	return &cloudFormationPluginOptions{
+		InputParameters: nil,
+		AWSContext:      awsCtx,
 	}
 }
 
-func getRequiredProviders(result *terraform.ModuleResult, provs map[provider.Provider]struct{}) {
-	for _, resource := range result.Resources {
-		p, _, _ := strings.Cut(resource.Type, "_")
-		pp := providerconv.ToProto(p)
-		if pp != provider.Provider_PROVIDER_UNSPECIFIED {
-			provs[pp] = struct{}{}
+type namingValidationSettings struct {
+	AttributeValidationRules []string `json:"attributeValidationRules"`
+}
+
+// namingPolicyAttributeRequirements derives the resource attributes the parser
+// must surface so naming-validation finops policies can be evaluated.
+func namingPolicyAttributeRequirements(policies []*event.FinopsPolicySettings) []*parserapi.AttributeRequirement {
+	grouped := make(map[string]map[string]struct{})
+	for _, policy := range policies {
+		if len(policy.GetSettings()) <= 2 {
+			continue
+		}
+
+		var settings namingValidationSettings
+		if err := json.Unmarshal([]byte(policy.GetSettings()), &settings); err != nil {
+			continue
+		}
+
+		for _, rule := range settings.AttributeValidationRules {
+			resourceType, attribute, err := parseAttributeValidationRule(rule)
+			if err != nil {
+				continue
+			}
+			attrs, ok := grouped[resourceType]
+			if !ok {
+				attrs = make(map[string]struct{})
+				grouped[resourceType] = attrs
+			}
+			attrs[attribute] = struct{}{}
 		}
 	}
-	for _, module := range result.Modules {
-		for _, r := range module.Results {
-			getRequiredProviders(r, provs)
+
+	reqs := make([]*parserapi.AttributeRequirement, 0, len(grouped))
+	for rt, attrs := range grouped {
+		names := make([]string, 0, len(attrs))
+		for name := range attrs {
+			names = append(names, name)
 		}
+		sort.Strings(names)
+		reqs = append(reqs, &parserapi.AttributeRequirement{ResourceType: rt, Attributes: names})
 	}
+	sort.Slice(reqs, func(i, j int) bool { return reqs[i].ResourceType < reqs[j].ResourceType })
+	return reqs
+}
+
+func parseAttributeValidationRule(rule string) (resourceType, attribute string, err error) {
+	keyRaw, valueRaw, found := strings.Cut(rule, ":")
+	if !found {
+		return "", "", fmt.Errorf("invalid rule format, expected 'resource_type.attribute: /regex/': %s", rule)
+	}
+
+	key := strings.TrimSpace(keyRaw)
+	value := strings.TrimSpace(valueRaw)
+
+	resourceType, attribute, found = strings.Cut(key, ".")
+	if !found {
+		return "", "", fmt.Errorf("invalid attribute key, expected 'resource_type.attribute': %s", key)
+	}
+	resourceType = strings.TrimSpace(resourceType)
+	attribute = strings.TrimSpace(attribute)
+	if resourceType == "" || attribute == "" {
+		return "", "", fmt.Errorf("invalid attribute key, expected non-empty resource type and attribute: %s", key)
+	}
+
+	if len(value) < 2 || value[0] != '/' || value[len(value)-1] != '/' {
+		return "", "", fmt.Errorf("invalid regex literal, expected /pattern/: %s", value)
+	}
+	if _, err := regexp.Compile(value[1 : len(value)-1]); err != nil {
+		return "", "", err
+	}
+
+	return resourceType, attribute, nil
+}
+
+// GetRequiredProvidersFromTree extracts the cloud providers required by a
+// parsed tree, mirroring the CLI scanner.
+func GetRequiredProvidersFromTree(tree *treepb.Tree) []provider.Provider {
+	if tree == nil {
+		return nil
+	}
+
+	seen := make(map[provider.Provider]struct{})
+	for raw := range tree.GetProviders() {
+		if raw == "azure" {
+			raw = "azurerm"
+		}
+		p := providerconv.ToProto(raw)
+		if p == provider.Provider_PROVIDER_UNSPECIFIED {
+			slog.Warn("skipping unsupported provider", "provider", raw)
+			continue
+		}
+		seen[p] = struct{}{}
+	}
+
+	out := make([]provider.Provider, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	providerOrder := map[provider.Provider]int{
+		provider.Provider_PROVIDER_AWS:     0,
+		provider.Provider_PROVIDER_GOOGLE:  1,
+		provider.Provider_PROVIDER_AZURERM: 2,
+	}
+	sort.Slice(out, func(i, j int) bool { return providerOrder[out[i]] < providerOrder[out[j]] })
+	return out
 }
 
 func isTransportError(err error) bool {
@@ -913,16 +1076,25 @@ type sourceLocation struct {
 	EndLine   int64
 }
 
-// getSourceLocations walks the terraform parse result and builds a map from
-// resource address (e.g. "aws_instance.my_web_app") to source location.
-// It also extracts module call locations from resource CallStacks into modLocs.
-func getSourceLocations(result *terraform.ModuleResult, prefix string, out map[string]sourceLocation, modLocs map[string]sourceLocation) {
-	for _, resource := range result.Resources {
-		addr := resource.Type + "." + resource.Name
-		if prefix != "" {
-			addr = prefix + "." + addr
+// collectTreeSourceLocations walks the parsed tree and builds a map from
+// resource address (e.g. "aws_instance.my_web_app") to source location. It also
+// extracts module call locations from resource CallStacks into modLocs. Source
+// locations for supported resources come primarily from the provider output's
+// metadata; this map is the fallback and covers unsupported resources and
+// module aggregation.
+func collectTreeSourceLocations(tree *treepb.Tree, out map[string]sourceLocation, modLocs map[string]sourceLocation) {
+	if tree == nil {
+		return
+	}
+
+	handle := func(res *treepb.Resource) {
+		def := res.GetDefinition()
+		if def == nil {
+			return
 		}
-		if sr := resource.SourceRange; sr != nil {
+
+		addr := address.FromProto(def.GetAddress()).String()
+		if sr := def.GetSource(); sr != nil && addr != "" {
 			out[addr] = sourceLocation{
 				Filename:  sr.Filename,
 				StartLine: sr.StartLine,
@@ -930,40 +1102,39 @@ func getSourceLocations(result *terraform.ModuleResult, prefix string, out map[s
 			}
 		}
 
-		if cs := resource.CallStack; cs != nil {
-			var modAddr string
-			for _, frame := range cs.Frames {
-				if frame.Address == nil || frame.SourceRange == nil {
-					continue
-				}
-				parts := make([]string, 0, len(frame.Address.Segments))
-				for _, seg := range frame.Address.Segments {
-					parts = append(parts, seg.Value)
-				}
-				segAddr := strings.Join(parts, ".")
-				if modAddr != "" {
-					modAddr += "." + segAddr
-				} else {
-					modAddr = segAddr
-				}
-				if _, ok := modLocs[modAddr]; !ok {
-					modLocs[modAddr] = sourceLocation{
-						Filename:  frame.SourceRange.Filename,
-						StartLine: frame.SourceRange.StartLine,
-						EndLine:   frame.SourceRange.EndLine,
-					}
+		cs := def.GetCallStack()
+		if cs == nil {
+			return
+		}
+		// Frame addresses are cumulative, so each frame yields the full module
+		// address up to that depth (e.g. "module.a", then "module.a.module.b").
+		for _, frame := range cs.Frames {
+			if frame.GetAddress() == nil || frame.GetSourceRange() == nil {
+				continue
+			}
+			modAddr := address.FromProto(frame.GetAddress()).String()
+			if modAddr == "" {
+				continue
+			}
+			if _, ok := modLocs[modAddr]; !ok {
+				modLocs[modAddr] = sourceLocation{
+					Filename:  frame.SourceRange.Filename,
+					StartLine: frame.SourceRange.StartLine,
+					EndLine:   frame.SourceRange.EndLine,
 				}
 			}
 		}
 	}
-	for name, module := range result.Modules {
-		modPrefix := "module." + name
-		if prefix != "" {
-			modPrefix = prefix + "." + modPrefix
+
+	for _, p := range tree.GetProviders() {
+		for _, svc := range p.GetServices() {
+			for _, res := range svc.GetResources() {
+				handle(res)
+			}
 		}
-		for _, r := range module.Results {
-			getSourceLocations(r, modPrefix, out, modLocs)
-		}
+	}
+	for _, res := range tree.GetUnsupportedResources() {
+		handle(res)
 	}
 }
 
@@ -1209,10 +1380,22 @@ func buildViolationMarkdownCurrency(v FinopsViolation, currency string) string {
 }
 
 func resolveFilename(projectPath, filename string) string {
+	// Resources from remote/registry modules carry a source URL as their
+	// filename. Leave it intact - joining it onto projectPath mangles the
+	// scheme (https:// -> https:/) and produces a bogus local path.
+	if IsRemoteSource(filename) {
+		return filename
+	}
 	if filepath.IsAbs(filename) {
 		return filename
 	}
 	return filepath.Join(projectPath, filename)
+}
+
+// IsRemoteSource reports whether a filename is a remote module source URL
+// (e.g. a GitHub blob URL or a git:: source) rather than a local file path.
+func IsRemoteSource(filename string) bool {
+	return strings.Contains(filename, "://") || strings.HasPrefix(filename, "git::")
 }
 
 func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error) {
@@ -1243,7 +1426,7 @@ func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error
 		}
 	}
 
-	return repoconfig.Generate(dir, opts...)
+	return repoconfig.Generate(context.Background(), dir, opts...)
 }
 
 func envToMap() map[string]string {

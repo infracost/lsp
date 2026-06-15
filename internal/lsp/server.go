@@ -125,9 +125,13 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 		}
 	}
 
+	// Prefer workspaceFolders (RootURI is deprecated), falling back to it for
+	// older clients that don't send folders.
 	rootURI := ""
-	if params.RootURI != nil {
-		rootURI = string(*params.RootURI)
+	if len(params.WorkspaceFolders) > 0 {
+		rootURI = string(params.WorkspaceFolders[0].URI)
+	} else if root := params.RootURI; root != nil { //nolint:staticcheck // SA1019: fallback for older clients without workspaceFolders
+		rootURI = string(*root)
 	}
 	s.workspaceRoot = uriToPath(rootURI)
 	slog.Info("initialize",

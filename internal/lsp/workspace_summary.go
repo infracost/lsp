@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/infracost/lsp/internal/scanner"
 )
+
+// remoteModulesGroup is the synthetic top-level tree node under which resources
+// from remote/registry modules are grouped, instead of shredding their source
+// URL into one node per path segment.
+const remoteModulesGroup = "Remote modules"
 
 type WorkspaceSummaryResult struct {
 	Files []WorkspaceSummaryFile `json:"files"`
@@ -77,7 +83,7 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 	// Group resources by file, only including those with issues.
 	type fileEntry struct {
 		relPath   string
-		absPath   string
+		uri       string
 		resources []WorkspaceSummaryResource
 	}
 	byFile := make(map[string]*fileEntry)
@@ -92,35 +98,50 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 			continue
 		}
 
-		absPath, err := filepath.Abs(r.Filename)
-		if err != nil {
-			continue
+		var relPath, uri string
+		if scanner.IsRemoteSource(r.Filename) {
+			// Group under a single "Remote modules" node with a clean
+			// owner/repo@ref/file label rather than the raw source URL.
+			relPath = remoteModulePath(r.Filename)
+			uri = r.Filename
+		} else {
+			absPath, err := filepath.Abs(r.Filename)
+			if err != nil {
+				continue
+			}
+			relPath, err = filepath.Rel(root, absPath)
+			if err != nil || strings.HasPrefix(relPath, "..") {
+				relPath = absPath
+			}
+			// Normalise to forward slashes for consistent JS path splitting.
+			relPath = filepath.ToSlash(relPath)
+			uri = pathToURI(absPath)
 		}
 
-		relPath, err := filepath.Rel(root, absPath)
-		if err != nil || strings.HasPrefix(relPath, "..") {
-			relPath = absPath
+		entry := byFile[relPath]
+		if entry == nil {
+			entry = &fileEntry{relPath: relPath, uri: uri}
+			byFile[relPath] = entry
 		}
-		// Normalise to forward slashes for consistent JS path splitting.
-		relPath = filepath.ToSlash(relPath)
-
-		if byFile[relPath] == nil {
-			byFile[relPath] = &fileEntry{relPath: relPath, absPath: absPath}
-		}
-		byFile[relPath].resources = append(byFile[relPath].resources, WorkspaceSummaryResource{
+		res := WorkspaceSummaryResource{
 			Name:         r.Name,
 			Line:         max(0, int(r.StartLine)-1),
 			MonthlyCost:  scanner.FormatCostCurrency(r.MonthlyCost, currency),
 			PolicyIssues: policyIssues,
 			TagIssues:    tagIssues,
-		})
+		}
+		// The merged result can list the same resource twice; don't duplicate
+		// the tree row.
+		if !containsResource(entry.resources, res) {
+			entry.resources = append(entry.resources, res)
+		}
 	}
 
 	files := make([]WorkspaceSummaryFile, 0, len(byFile))
 	for _, entry := range byFile {
 		files = append(files, WorkspaceSummaryFile{
 			Path:      entry.relPath,
-			URI:       pathToURI(entry.absPath),
+			URI:       entry.uri,
 			Resources: entry.resources,
 		})
 	}
@@ -129,4 +150,75 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 	})
 
 	return WorkspaceSummaryResult{Files: files}, nil
+}
+
+// remoteModulePath turns a remote module source URL into a clean, slash-
+// delimited tree path under the "Remote modules" node, e.g.
+//
+//	https://github.com/RaJiska/terraform-aws-fck-nat/blob/1.4.0/ec2.tf#L58-L118
+//	-> Remote modules/RaJiska/terraform-aws-fck-nat@1.4.0/ec2.tf
+//
+// The extension splits the path on "/" to build the tree, so each segment
+// becomes a node. Unrecognised URL shapes fall back to grouping the resource
+// directly under the "Remote modules" node.
+func remoteModulePath(rawURL string) string {
+	trimmed := strings.TrimPrefix(rawURL, "git::")
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Path == "" {
+		return remoteModulesGroup
+	}
+
+	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+	if len(parts) == 0 {
+		return remoteModulesGroup
+	}
+
+	var owner, repo, ref string
+	if len(parts) >= 2 {
+		owner, repo = parts[0], parts[1]
+	}
+	// GitHub/GitLab/Bitbucket layouts encode the ref after blob/tree/raw/src.
+	for i, p := range parts {
+		if (p == "blob" || p == "tree" || p == "raw" || p == "src") && i+1 < len(parts) {
+			ref = parts[i+1]
+			break
+		}
+	}
+	// Terraform git sources encode the ref in a ?ref= query instead.
+	if ref == "" {
+		ref = u.Query().Get("ref")
+	}
+
+	label := repo
+	if owner != "" && repo != "" {
+		label = owner + "/" + repo
+	}
+	if label != "" && ref != "" {
+		label += "@" + ref
+	}
+
+	segs := []string{remoteModulesGroup}
+	if label != "" {
+		segs = append(segs, label)
+	} else {
+		// No recognisable owner/repo; group under the first path segment.
+		segs = append(segs, parts[0])
+	}
+	// The trailing segment is the source file, but only when the URL points
+	// deeper than owner/repo (otherwise it just repeats the repo segment).
+	if len(parts) > 2 {
+		segs = append(segs, parts[len(parts)-1])
+	}
+	return strings.Join(segs, "/")
+}
+
+// containsResource reports whether rs already holds a resource with the same
+// name and line, so the merged result's duplicates aren't shown twice.
+func containsResource(rs []WorkspaceSummaryResource, r WorkspaceSummaryResource) bool {
+	for _, x := range rs {
+		if x.Name == r.Name && x.Line == r.Line {
+			return true
+		}
+	}
+	return false
 }
