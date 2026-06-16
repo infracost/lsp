@@ -374,6 +374,16 @@ func (s *Scanner) Close() {
 	}
 }
 
+// ResetParserPlugins clears parser subprocess state before a fresh LSP scan.
+// This is a temporary workaround for the CLI plugin refactor: the new parser
+// plugin protocol doesn't expose the old DisableGraphCache initialization flag,
+// so Terraform graph cache entries can hide just-saved edits.
+func (s *Scanner) ResetParserPlugins() {
+	if s.Plugins != nil {
+		s.Plugins.ResetParserPlugins()
+	}
+}
+
 // LoadConfig loads or auto-generates an infracost config for the given directory.
 func LoadConfig(dir, configTemplate string) (*repoconfig.Config, error) {
 	absDir, err := filepath.Abs(dir)
@@ -788,6 +798,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	s.ResetParserPlugins()
 	pp, err := s.Plugins.ParserPluginForProject(ctx, string(projectType))
 	if err != nil {
 		// EnsurePlugins caches its result behind a sync.Once, so a transient
