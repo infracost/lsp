@@ -850,8 +850,11 @@ func finalProjectType(projectType repoconfig.ProjectType, absoluteProjectPath st
 }
 
 func buildGenericOptions(project *repoconfig.Project, rootDir string) *options.GenericOptions {
-	cacheDir := filepath.Join(os.TempDir(), ".infracost", "cache")
-	_ = os.MkdirAll(cacheDir, 0o700)
+	cacheDir := parserCacheDir()
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		slog.Warn("scanner: failed to create parser cache dir, falling back to system temp", "dir", cacheDir, "error", err)
+		cacheDir = os.TempDir()
+	}
 
 	return &options.GenericOptions{
 		ProjectName:        project.Name,
@@ -861,6 +864,21 @@ func buildGenericOptions(project *repoconfig.Project, rootDir string) *options.G
 		CacheDirectory:     cacheDir,
 		WorkingDirectory:   rootDir,
 	}
+}
+
+// parserCacheDir mirrors the CLI's cache.ParserDir resolution
+// (<UserCacheDir>/infracost/parser, with home and CWD fallbacks). Kept
+// inline because internal/cache in the CLI module isn't importable
+// from here; the directory layout is a shared contract between this
+// LSP and the CLI so both processes can reuse downloaded modules.
+func parserCacheDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "infracost", "parser")
+	}
+	if dir, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(dir, ".infracost", "parser")
+	}
+	return filepath.Join(".infracost", "parser")
 }
 
 func buildIaCOptions(cfg *repoconfig.Config, project *repoconfig.Project, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) ([]byte, string, error) {
