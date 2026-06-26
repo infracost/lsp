@@ -75,7 +75,6 @@ func main() {
 	}()
 
 	slog.Info("starting infracost-ls",
-		"parser_plugin", cfg.Plugins.Parser.Plugin,
 		"currency", cfg.Currency,
 		"pricing_endpoint", cfg.PricingEndpoint,
 		"has_token_source", cfg.TokenSource != nil,

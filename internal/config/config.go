@@ -105,30 +105,9 @@ func loadPluginsConfig() *cliplugins.Config {
 }
 
 func loadPluginEnv(c *cliplugins.Config) {
-	if v := os.Getenv("INFRACOST_CLI_PARSER_PLUGIN"); v != "" {
-		c.Parser.Plugin = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PARSER_PLUGIN_VERSION"); v != "" {
-		c.Parser.Version = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_AWS"); v != "" {
-		c.Providers.AWS = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE"); v != "" {
-		c.Providers.Google = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_AZURERM"); v != "" {
-		c.Providers.Azure = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_AWS_VERSION"); v != "" {
-		c.Providers.AWSVersion = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_GOOGLE_VERSION"); v != "" {
-		c.Providers.GoogleVersion = v
-	}
-	if v := os.Getenv("INFRACOST_CLI_PROVIDER_PLUGIN_AZURE_VERSION"); v != "" {
-		c.Providers.AzureVersion = v
-	}
+	// Per-plugin version pins (INFRACOST_CLI_PLUGIN_<KEY>_VERSION) are read
+	// directly by the CLI plugins package, so we only wire the lifecycle knobs
+	// here.
 	if os.Getenv("INFRACOST_CLI_PLUGIN_MANIFEST_URL") != "" {
 		slog.Warn("INFRACOST_CLI_PLUGIN_MANIFEST_URL is deprecated and ignored; set INFRACOST_CLI_PLUGIN_BASE_URL to the release bucket root instead")
 	}
@@ -137,5 +116,8 @@ func loadPluginEnv(c *cliplugins.Config) {
 	}
 	if v := os.Getenv("INFRACOST_CLI_PLUGIN_CACHE_DIRECTORY"); v != "" {
 		c.Cache = v
+	}
+	if v := os.Getenv("INFRACOST_CLI_PLUGIN_DIR"); v != "" {
+		c.Dir = v
 	}
 }
