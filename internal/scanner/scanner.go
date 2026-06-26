@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/go-hclog"
 	cliplugins "github.com/infracost/cli/pkg/plugins"
 	repoconfig "github.com/infracost/config"
 	"github.com/infracost/go-proto/pkg/address"
@@ -46,7 +45,7 @@ import (
 // Scanner orchestrates parsing and pricing of IaC projects.
 type Scanner struct {
 	// Plugins owns the full parser/provider plugin lifecycle (S3 download,
-	// connect, client caching, and reconnect-on-error), delegated to the CLI.
+	// connect, client caching), delegated to the CLI.
 	Plugins           *cliplugins.Config
 	Currency          string
 	PricingEndpoint   string
@@ -73,6 +72,17 @@ type Scanner struct {
 
 	policyDetailMu    sync.RWMutex
 	policyDetailCache map[string]dashboard.PolicyDetail
+}
+
+// resetPlugins kills the plugin subprocesses so the next scan spawns fresh
+// ones. The CLI manager resets its load-once on Close, so the next
+// ParserPluginForProject/ProviderPlugins call reconnects automatically — this
+// both clears the parser's per-directory cache (stale after files change) and
+// recovers from a dead plugin subprocess.
+func (s *Scanner) resetPlugins() {
+	if s.Plugins != nil {
+		s.Plugins.Close()
+	}
 }
 
 // Init initializes internal state. Must be called before first use.
@@ -129,9 +139,8 @@ func (s *Scanner) SetCurrency(currency string) bool {
 	s.exchangeRates = nil
 	s.exchangeRateMu.Unlock()
 
-	if s.Plugins != nil {
-		s.Plugins.Providers.Close()
-	}
+	// Rebuild plugins so the next scan reconnects with the new currency.
+	s.resetPlugins()
 	return true
 }
 
@@ -774,20 +783,24 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
 	name := providerconv.FromProto(prov)
 
-	loader := s.providerLoader(prov)
-	if loader == nil {
+	pluginName := providerPluginName(prov)
+	if pluginName == "" {
 		return nil, nil, []string{fmt.Sprintf("unknown provider: %s", name)}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// ProcessTreeInput owns plugin loading, response caching, and
-	// reconnect-on-error (the cached client is evicted when a call fails).
 	processStart := time.Now()
-	rs, ps, err := s.Plugins.Providers.ProcessTreeInput(ctx, prov, input, loader, s.hclogLevel())
+	rs, ps, err := s.runProvider(ctx, pluginName, input)
 	processDuration := time.Since(processStart)
 	if err != nil {
+		// A dead plugin subprocess sticks behind the manager's cache until we
+		// rebuild, so reset on transport errors to let the next scan reconnect.
+		if isTransportError(err) {
+			slog.Warn("processProvider: transport error, resetting plugins", "provider", name, "error", err)
+			s.resetPlugins()
+		}
 		slog.Error("processProvider: Process failed", "provider", name, "error", err, "elapsed", processDuration)
 		return nil, nil, []string{fmt.Sprintf("%s provider error: %v", name, err)}
 	}
@@ -796,28 +809,49 @@ func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, i
 	return rs, ps, nil
 }
 
-// providerLoader returns the cliplugins loader for the given provider, or nil
-// if the provider is not one we support.
-func (s *Scanner) providerLoader(prov provider.Provider) func(hclog.Level) (pluginpb.ProviderServiceClient, func(), error) {
-	switch prov {
-	case provider.Provider_PROVIDER_AWS:
-		return s.Plugins.Providers.LoadAWS
-	case provider.Provider_PROVIDER_GOOGLE:
-		return s.Plugins.Providers.LoadGoogle
-	case provider.Provider_PROVIDER_AZURERM:
-		return s.Plugins.Providers.LoadAzurerm
-	default:
-		return nil
+// runProvider loads the provider plugins, picks the one matching pluginName,
+// and runs it over the tree input.
+func (s *Scanner) runProvider(ctx context.Context, pluginName string, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, error) {
+	plugins, err := s.Plugins.ProviderPlugins(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading provider plugins: %w", err)
 	}
+
+	var pp *cliplugins.ProviderPlugin
+	for _, p := range plugins {
+		if p.Info.GetName() == pluginName {
+			pp = p
+			break
+		}
+	}
+	if pp == nil {
+		return nil, nil, fmt.Errorf("provider plugin %q not loaded", pluginName)
+	}
+
+	resp, err := pp.Process(ctx, &pluginpb.ProcessRequest{Input: input})
+	if err != nil {
+		return nil, nil, err
+	}
+	out := resp.GetOutput()
+	if out == nil {
+		return nil, nil, nil
+	}
+	return out.Resources, out.FinopsResults, nil
 }
 
-// hclogLevel maps the configured slog level onto the hclog level the CLI
-// plugin loaders expect.
-func (s *Scanner) hclogLevel() hclog.Level {
-	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		return hclog.Debug
+// providerPluginName maps a provider enum to the plugin name the CLI reports
+// (GetPluginInfo Name), or "" if unsupported.
+func providerPluginName(prov provider.Provider) string {
+	switch prov {
+	case provider.Provider_PROVIDER_AWS:
+		return "infracost/aws"
+	case provider.Provider_PROVIDER_GOOGLE:
+		return "infracost/google"
+	case provider.Provider_PROVIDER_AZURERM:
+		return "infracost/azure"
+	default:
+		return ""
 	}
-	return hclog.Info
 }
 
 func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config, project *repoconfig.Project, rootDir string, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) (*pluginpb.ParseResponse, error) {
@@ -829,7 +863,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 		// EnsurePlugins caches its result behind a sync.Once, so a transient
 		// download failure would otherwise stick for the life of the server.
 		// Reset so the next scan retries.
-		s.Plugins.ResetParserPlugins()
+		s.resetPlugins()
 		return nil, fmt.Errorf("loading parser plugin for project type %q: %w", projectType, err)
 	}
 
@@ -850,7 +884,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	resp, err := pp.Parse(ctx, req)
 	if err != nil && isTransportError(err) {
 		slog.Warn("parse: transport error, reconnecting", "error", err)
-		s.Plugins.ResetParserPlugins()
+		s.resetPlugins()
 		pp, err = s.Plugins.ParserPluginForProject(ctx, string(projectType))
 		if err != nil {
 			return nil, fmt.Errorf("reconnecting parser plugin: %w", err)
@@ -859,7 +893,7 @@ func (s *Scanner) parse(ctx context.Context, path string, cfg *repoconfig.Config
 	}
 	if err != nil {
 		slog.Error("parse: Parse failed", "error", err)
-		s.Plugins.ResetParserPlugins()
+		s.resetPlugins()
 		return resp, err
 	}
 
