@@ -398,25 +398,59 @@ func (s *Scanner) Scan(ctx context.Context, dir string) (*ScanResult, error) {
 	return s.ScanAll(ctx, absDir, cfg)
 }
 
+// openContainedFile opens relPath resolved inside rootDir, refusing any path
+// that escapes the workspace root via "../" segments or symlinks. The workspace
+// is attacker-controlled — the editor may auto-scan an untrusted repo the user
+// just cloned — so repo-config values like usage_file must not be able to read
+// or probe files outside the root. os.Root enforces containment structurally at
+// the OS layer, which also closes the existence-oracle (an escaping path fails
+// identically whether or not the target exists).
+func openContainedFile(rootDir, relPath string) (*os.File, error) {
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	return root.Open(relPath)
+}
+
+// containedProjectPath validates that a repo-config project path stays within
+// the workspace root and returns its absolute path, rejecting traversal outside
+// the root. See openContainedFile for the threat model.
+func containedProjectPath(rootDir, relPath string) (string, error) {
+	if relPath == "" {
+		relPath = "."
+	}
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = root.Close() }()
+	// Stat resolves relPath within the root, refusing escapes via "../" or symlinks.
+	if _, err := root.Stat(relPath); err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(rootDir, relPath)), nil
+}
+
 // loadRepoUsage loads repo-level usage: API defaults merged with the repo's usage YAML file.
 func (s *Scanner) loadRepoUsage(rootDir string, cfg *repoconfig.Config, usageDefaults *event.UsageDefaults) *usage.Usage {
 	repoUsage := loadUsageDefaults(usageDefaults, "")
 	if cfg.UsageFilePath != "" {
-		usagePath := filepath.Join(rootDir, cfg.UsageFilePath)
-		if stat, err := os.Stat(usagePath); err == nil && !stat.IsDir() {
-			f, err := os.Open(usagePath) // #nosec G304
-			if err != nil {
-				slog.Warn("loadRepoUsage: failed to open usage file", "path", usagePath, "error", err)
-				return repoUsage
-			}
-			u, err := loadUsageData(f, repoUsage)
-			_ = f.Close()
-			if err != nil {
-				slog.Warn("loadRepoUsage: failed to load usage file", "path", usagePath, "error", err)
-				return repoUsage
-			}
-			repoUsage = u
+		f, err := openContainedFile(rootDir, cfg.UsageFilePath)
+		if err != nil {
+			slog.Debug("loadRepoUsage: skipping usage file", "path", cfg.UsageFilePath, "error", err)
+			return repoUsage
 		}
+		if stat, err := f.Stat(); err == nil && !stat.IsDir() {
+			u, err := loadUsageData(f, repoUsage)
+			if err != nil {
+				slog.Warn("loadRepoUsage: failed to load usage file", "path", cfg.UsageFilePath, "error", err)
+			} else {
+				repoUsage = u
+			}
+		}
+		_ = f.Close()
 	}
 	return repoUsage
 }
@@ -460,7 +494,10 @@ func (s *Scanner) ScanProject(ctx context.Context, rootDir string, cfg *repoconf
 }
 
 func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconfig.Config, project *repoconfig.Project, orgID string, repoUsage *usage.Usage, branchName string, params runParamsSnapshot) (*ScanResult, error) {
-	projectPath := filepath.Clean(filepath.Join(rootDir, project.Path))
+	projectPath, err := containedProjectPath(rootDir, project.Path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving project path %q: %w", project.Path, err)
+	}
 	slog.Debug("scanProject: starting", "name", project.Name, "path", projectPath)
 
 	projectType := finalProjectType(project.Type, projectPath)
@@ -525,21 +562,20 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	// Load project-level usage (overlay on top of repo-level).
 	projectUsage := repoUsage
 	if project.UsageFile != "" && project.UsageFile != cfg.UsageFilePath {
-		usagePath := filepath.Join(rootDir, project.UsageFile)
-		if stat, err := os.Stat(usagePath); err == nil && !stat.IsDir() {
-			f, err := os.Open(usagePath) // #nosec G304
-			if err != nil {
-				slog.Warn("scanProject: failed to open project usage file", "path", usagePath, "error", err)
-			} else {
+		f, err := openContainedFile(rootDir, project.UsageFile)
+		if err != nil {
+			slog.Debug("scanProject: skipping project usage file", "path", project.UsageFile, "error", err)
+		} else {
+			if stat, err := f.Stat(); err == nil && !stat.IsDir() {
 				usageDefaults := loadUsageDefaults(params.usageDefaults, project.Name)
 				u, err := loadUsageData(f, usageDefaults)
-				_ = f.Close()
 				if err == nil {
 					projectUsage = u
 				} else {
-					slog.Warn("scanProject: failed to load project usage file", "path", usagePath, "error", err)
+					slog.Warn("scanProject: failed to load project usage file", "path", project.UsageFile, "error", err)
 				}
 			}
+			_ = f.Close()
 		}
 	}
 
