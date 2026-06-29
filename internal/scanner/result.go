@@ -16,11 +16,21 @@ type ResourceResult struct {
 	StartLine int64
 	EndLine   int64
 
+	ModuleCallStack []ModuleCall
+
 	MonthlyCost    *rat.Rat
 	CostComponents []CostComponent
 
 	IsSupported bool
 	IsFree      bool
+}
+
+// ModuleCall describes a module block in a resource's call stack.
+type ModuleCall struct {
+	Name      string // e.g. "module.dashboard" or "module.dashboard.module.eks"
+	Filename  string
+	StartLine int64
+	EndLine   int64
 }
 
 type CostComponent struct {
