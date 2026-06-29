@@ -82,7 +82,7 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 		}
 
 		// Cost lens — omitted when no pricing data is available. Only one cost lens
-		// is shown per line; module aggregate costs override resource costs below.
+		// is shown per line; picks the highest cost, with module aggregate costs winning ties.
 		switch {
 		case !r.IsSupported:
 			addCostLens(rng, revealResourceCommand("Not supported", uri, line, r.Name), nil, 1)
