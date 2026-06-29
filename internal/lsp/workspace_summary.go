@@ -19,11 +19,13 @@ const remoteModulesGroup = "Remote modules"
 
 type WorkspaceSummaryResult struct {
 	Files []WorkspaceSummaryFile `json:"files"`
+	Tree  []WorkspaceSummaryNode `json:"tree,omitempty"`
 }
 
 type WorkspaceSummaryFile struct {
 	Path      string                     `json:"path"` // relative to workspace root
 	URI       string                     `json:"uri"`
+	Openable  bool                       `json:"openable"`
 	Resources []WorkspaceSummaryResource `json:"resources"`
 }
 
@@ -33,6 +35,21 @@ type WorkspaceSummaryResource struct {
 	MonthlyCost  string `json:"monthlyCost"`
 	PolicyIssues int    `json:"policyIssues"`
 	TagIssues    int    `json:"tagIssues"`
+}
+
+// WorkspaceSummaryNode is a semantic tree for clients that want to show module
+// call chains instead of just grouping resources by source file.
+type WorkspaceSummaryNode struct {
+	Type         string                 `json:"type"`
+	Label        string                 `json:"label"`
+	Path         string                 `json:"path,omitempty"`
+	URI          string                 `json:"uri,omitempty"`
+	Openable     bool                   `json:"openable"`
+	Line         int                    `json:"line,omitempty"`
+	MonthlyCost  string                 `json:"monthlyCost,omitempty"`
+	PolicyIssues int                    `json:"policyIssues,omitempty"`
+	TagIssues    int                    `json:"tagIssues,omitempty"`
+	Children     []WorkspaceSummaryNode `json:"children,omitempty"`
 }
 
 // HandleWorkspaceSummary returns all resources with FinOps or tag policy issues,
@@ -47,6 +64,7 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 
 	s.mu.RLock()
 	root := s.workspaceRoot
+	displayRemoteModules := s.settings.DisplayRemoteModulesInTree
 	s.mu.RUnlock()
 
 	// Count policy violations per resource address.
@@ -84,9 +102,11 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 	type fileEntry struct {
 		relPath   string
 		uri       string
+		openable  bool
 		resources []WorkspaceSummaryResource
 	}
 	byFile := make(map[string]*fileEntry)
+	tree := make([]WorkspaceSummaryNode, 0)
 
 	for _, r := range result.Resources {
 		if r.Filename == "" {
@@ -98,29 +118,14 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 			continue
 		}
 
-		var relPath, uri string
-		if scanner.IsRemoteSource(r.Filename) {
-			// Group under a single "Remote modules" node with a clean
-			// owner/repo@ref/file label rather than the raw source URL.
-			relPath = remoteModulePath(r.Filename)
-			uri = r.Filename
-		} else {
-			absPath, err := filepath.Abs(r.Filename)
-			if err != nil {
-				continue
-			}
-			relPath, err = filepath.Rel(root, absPath)
-			if err != nil || strings.HasPrefix(relPath, "..") {
-				relPath = absPath
-			}
-			// Normalise to forward slashes for consistent JS path splitting.
-			relPath = filepath.ToSlash(relPath)
-			uri = pathToURI(absPath)
+		relPath, uri, openable, ok := workspaceSummarySource(root, r.Filename, displayRemoteModules)
+		if !ok {
+			continue
 		}
 
 		entry := byFile[relPath]
 		if entry == nil {
-			entry = &fileEntry{relPath: relPath, uri: uri}
+			entry = &fileEntry{relPath: relPath, uri: uri, openable: openable}
 			byFile[relPath] = entry
 		}
 		res := WorkspaceSummaryResource{
@@ -135,6 +140,7 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 		if !containsResource(entry.resources, res) {
 			entry.resources = append(entry.resources, res)
 		}
+		insertWorkspaceSummaryResource(&tree, root, r, res, relPath, uri, openable, displayRemoteModules)
 	}
 
 	files := make([]WorkspaceSummaryFile, 0, len(byFile))
@@ -142,14 +148,177 @@ func (s *Server) HandleWorkspaceSummary(_ context.Context, _ json.RawMessage) (a
 		files = append(files, WorkspaceSummaryFile{
 			Path:      entry.relPath,
 			URI:       entry.uri,
+			Openable:  entry.openable,
 			Resources: entry.resources,
 		})
 	}
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].Path < files[j].Path
 	})
+	sortWorkspaceSummaryNodes(tree)
 
-	return WorkspaceSummaryResult{Files: files}, nil
+	return WorkspaceSummaryResult{Files: files, Tree: tree}, nil
+}
+
+func workspaceSummarySource(root, filename string, displayRemoteModules bool) (string, string, bool, bool) {
+	if filename == "" {
+		return "", "", false, false
+	}
+	if scanner.IsRemoteSource(filename) {
+		if !displayRemoteModules {
+			return "", "", false, false
+		}
+		return remoteModulePath(filename), filename, false, true
+	}
+
+	absPath, err := filepath.Abs(filename)
+	if err != nil {
+		return "", "", false, false
+	}
+	relPath, err := filepath.Rel(root, absPath)
+	if err != nil || strings.HasPrefix(relPath, "..") {
+		relPath = absPath
+	}
+	return filepath.ToSlash(relPath), pathToURI(absPath), true, true
+}
+
+func insertWorkspaceSummaryResource(tree *[]WorkspaceSummaryNode, root string, r scanner.ResourceResult, res WorkspaceSummaryResource, resourcePath, resourceURI string, resourceOpenable, displayRemoteModules bool) {
+	children := tree
+	currentFilePath := ""
+	currentModulePath := ""
+
+	for _, call := range r.ModuleCallStack {
+		if !strings.HasPrefix(r.Name, call.Name+".") {
+			continue
+		}
+		path, uri, openable, ok := workspaceSummarySource(root, call.Filename, displayRemoteModules)
+		if !ok {
+			continue
+		}
+		if path != currentFilePath {
+			file := upsertWorkspaceSummaryFileNode(children, WorkspaceSummaryNode{
+				Type:     "file",
+				Label:    path,
+				Path:     path,
+				URI:      uri,
+				Openable: openable,
+			}, currentFilePath == "")
+			children = &file.Children
+			currentFilePath = path
+		}
+
+		if call.Name == currentModulePath {
+			continue
+		}
+		module := upsertWorkspaceSummaryNode(children, WorkspaceSummaryNode{
+			Type:     "module",
+			Label:    moduleCallLabel(call.Name),
+			Path:     call.Name,
+			URI:      uri,
+			Openable: openable,
+			Line:     max(0, int(call.StartLine)-1),
+		})
+		children = &module.Children
+		currentModulePath = call.Name
+	}
+
+	if resourcePath != currentFilePath {
+		file := upsertWorkspaceSummaryFileNode(children, WorkspaceSummaryNode{
+			Type:     "file",
+			Label:    resourcePath,
+			Path:     resourcePath,
+			URI:      resourceURI,
+			Openable: resourceOpenable,
+		}, currentFilePath == "")
+		children = &file.Children
+	}
+
+	upsertWorkspaceSummaryNode(children, WorkspaceSummaryNode{
+		Type:         "resource",
+		Label:        workspaceSummaryResourceLabel(r.Name, r.ModuleCallStack),
+		Path:         r.Name,
+		URI:          resourceURI,
+		Openable:     resourceOpenable,
+		Line:         res.Line,
+		MonthlyCost:  res.MonthlyCost,
+		PolicyIssues: res.PolicyIssues,
+		TagIssues:    res.TagIssues,
+	})
+}
+
+func upsertWorkspaceSummaryFileNode(nodes *[]WorkspaceSummaryNode, node WorkspaceSummaryNode, splitFolders bool) *WorkspaceSummaryNode {
+	parts := strings.Split(filepath.ToSlash(node.Path), "/")
+	if !splitFolders || len(parts) <= 1 {
+		node.Label = parts[len(parts)-1]
+		return upsertWorkspaceSummaryNode(nodes, node)
+	}
+
+	children := nodes
+	for i, part := range parts[:len(parts)-1] {
+		folder := upsertWorkspaceSummaryNode(children, WorkspaceSummaryNode{
+			Type:     "folder",
+			Label:    part,
+			Path:     strings.Join(parts[:i+1], "/"),
+			Openable: false,
+		})
+		children = &folder.Children
+	}
+	node.Label = parts[len(parts)-1]
+	return upsertWorkspaceSummaryNode(children, node)
+}
+
+func upsertWorkspaceSummaryNode(nodes *[]WorkspaceSummaryNode, node WorkspaceSummaryNode) *WorkspaceSummaryNode {
+	for i := range *nodes {
+		current := &(*nodes)[i]
+		if current.Type == node.Type && current.Path == node.Path && current.URI == node.URI && current.Line == node.Line {
+			return current
+		}
+	}
+	*nodes = append(*nodes, node)
+	return &(*nodes)[len(*nodes)-1]
+}
+
+func sortWorkspaceSummaryNodes(nodes []WorkspaceSummaryNode) {
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Type != nodes[j].Type {
+			return workspaceSummaryNodeOrder(nodes[i].Type) < workspaceSummaryNodeOrder(nodes[j].Type)
+		}
+		return nodes[i].Label < nodes[j].Label
+	})
+	for i := range nodes {
+		sortWorkspaceSummaryNodes(nodes[i].Children)
+	}
+}
+
+func workspaceSummaryNodeOrder(t string) int {
+	switch t {
+	case "file":
+		return 0
+	case "module":
+		return 1
+	case "resource":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func moduleCallLabel(name string) string {
+	parts := strings.Split(name, ".")
+	if len(parts) >= 2 {
+		return "module." + parts[len(parts)-1]
+	}
+	return name
+}
+
+func workspaceSummaryResourceLabel(name string, stack []scanner.ModuleCall) string {
+	for i := len(stack) - 1; i >= 0; i-- {
+		prefix := stack[i].Name + "."
+		if strings.HasPrefix(name, prefix) {
+			return strings.TrimPrefix(name, prefix)
+		}
+	}
+	return name
 }
 
 // remoteModulePath turns a remote module source URL into a clean, slash-

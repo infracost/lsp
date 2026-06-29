@@ -65,8 +65,9 @@ type InvalidTagDetail struct {
 }
 
 type resourceDetailsParams struct {
-	URI  string `json:"uri"`
-	Line int    `json:"line"`
+	URI     string `json:"uri"`
+	Line    int    `json:"line"`
+	Address string `json:"address,omitempty"`
 }
 
 // HandleResourceDetails handles the infracost/resourceDetails custom request.
@@ -101,7 +102,9 @@ func (s *Server) HandleResourceDetails(_ context.Context, params json.RawMessage
 		tagViolationsByAddr[v.Address] = append(tagViolationsByAddr[v.Address], v)
 	}
 
-	for _, r := range result.Resources {
+	var best *scanner.ResourceResult
+	for i := range result.Resources {
+		r := &result.Resources[i]
 		if r.Filename == "" {
 			continue
 		}
@@ -111,15 +114,40 @@ func (s *Server) HandleResourceDetails(_ context.Context, params json.RawMessage
 			continue
 		}
 
-		if line < r.StartLine || line > r.EndLine {
+		if p.Address != "" {
+			if r.Name == p.Address && betterResourceDetailsMatch(best, r) {
+				best = r
+			}
 			continue
 		}
 
-		detail := buildResourceDetail(r, violationsByAddr[r.Name], tagViolationsByAddr[r.Name], s.currency())
+		if line >= r.StartLine && line <= r.EndLine && betterResourceDetailsMatch(best, r) {
+			best = r
+		}
+	}
+
+	if best != nil {
+		detail := buildResourceDetail(*best, violationsByAddr[best.Name], tagViolationsByAddr[best.Name], s.currency())
 		return ResourceDetailsResult{Resource: &detail, NeedsLogin: needsLogin}, nil
 	}
 
 	return ResourceDetailsResult{NeedsLogin: needsLogin}, nil
+}
+
+func betterResourceDetailsMatch(existing, candidate *scanner.ResourceResult) bool {
+	if candidate == nil {
+		return false
+	}
+	if existing == nil {
+		return true
+	}
+	if existing.MonthlyCost != nil && candidate.MonthlyCost != nil {
+		return candidate.MonthlyCost.GreaterThan(existing.MonthlyCost)
+	}
+	if candidate.MonthlyCost != nil {
+		return true
+	}
+	return false
 }
 
 func buildResourceDetail(r scanner.ResourceResult, violations []scanner.FinopsViolation, tagViolations []scanner.TagViolation, currency string) ResourceDetail {

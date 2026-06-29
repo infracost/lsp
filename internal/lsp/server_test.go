@@ -57,14 +57,16 @@ func TestDidChangeConfigurationCurrency(t *testing.T) {
 	err := srv.DidChangeConfiguration(context.Background(), &lsp.DidChangeConfigurationParams{
 		Settings: map[string]any{
 			"infracost": map[string]any{
-				"currency":                 "eur",
-				"runParamsCacheTTLSeconds": 60,
+				"currency":                   "eur",
+				"runParamsCacheTTLSeconds":   60,
+				"displayRemoteModulesInTree": true,
 			},
 		},
 	})
 	require.NoError(t, err)
 
 	assert.Equal(t, "EUR", srv.settings.Currency)
+	assert.True(t, srv.settings.DisplayRemoteModulesInTree)
 	assert.Equal(t, "EUR", scn.CurrencyOrDefault())
 }
 

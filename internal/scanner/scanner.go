@@ -551,7 +551,8 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 
 	srcLocs := make(map[string]sourceLocation)
 	modLocs := make(map[string]sourceLocation)
-	collectTreeSourceLocations(tree, srcLocs, modLocs)
+	moduleStacks := make(map[string][]ModuleCall)
+	collectTreeSourceLocations(tree, srcLocs, modLocs, moduleStacks)
 	slog.Debug("scanProject: source locations", "count", len(srcLocs), "module_locations", len(modLocs), "providers", requiredProviders)
 
 	currency := s.CurrencyOrDefault()
@@ -675,6 +676,13 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 			rr.Filename = resolveFilename(rootDir, loc.Filename)
 			rr.StartLine = loc.StartLine
 			rr.EndLine = loc.EndLine
+		}
+		if stack, ok := moduleStacks[r.Name]; ok {
+			rr.ModuleCallStack = make([]ModuleCall, 0, len(stack))
+			for _, call := range stack {
+				call.Filename = resolveFilename(rootDir, call.Filename)
+				rr.ModuleCallStack = append(rr.ModuleCallStack, call)
+			}
 		}
 
 		slog.Debug("scanProject: resource",
@@ -1170,7 +1178,7 @@ type sourceLocation struct {
 // locations for supported resources come primarily from the provider output's
 // metadata; this map is the fallback and covers unsupported resources and
 // module aggregation.
-func collectTreeSourceLocations(tree *treepb.Tree, out map[string]sourceLocation, modLocs map[string]sourceLocation) {
+func collectTreeSourceLocations(tree *treepb.Tree, out map[string]sourceLocation, modLocs map[string]sourceLocation, moduleStacks map[string][]ModuleCall) {
 	if tree == nil {
 		return
 	}
@@ -1194,6 +1202,7 @@ func collectTreeSourceLocations(tree *treepb.Tree, out map[string]sourceLocation
 		if cs == nil {
 			return
 		}
+		stack := make([]ModuleCall, 0, len(cs.Frames))
 		// Frame addresses are cumulative, so each frame yields the full module
 		// address up to that depth (e.g. "module.a", then "module.a.module.b").
 		for _, frame := range cs.Frames {
@@ -1204,13 +1213,23 @@ func collectTreeSourceLocations(tree *treepb.Tree, out map[string]sourceLocation
 			if modAddr == "" {
 				continue
 			}
-			if _, ok := modLocs[modAddr]; !ok {
-				modLocs[modAddr] = sourceLocation{
-					Filename:  frame.SourceRange.Filename,
-					StartLine: frame.SourceRange.StartLine,
-					EndLine:   frame.SourceRange.EndLine,
-				}
+			loc := sourceLocation{
+				Filename:  frame.SourceRange.Filename,
+				StartLine: frame.SourceRange.StartLine,
+				EndLine:   frame.SourceRange.EndLine,
 			}
+			if _, ok := modLocs[modAddr]; !ok {
+				modLocs[modAddr] = loc
+			}
+			stack = append(stack, ModuleCall{
+				Name:      modAddr,
+				Filename:  loc.Filename,
+				StartLine: loc.StartLine,
+				EndLine:   loc.EndLine,
+			})
+		}
+		if len(stack) > 0 && addr != "" {
+			moduleStacks[addr] = stack
 		}
 	}
 

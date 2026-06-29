@@ -6,11 +6,20 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 
 	"github.com/owenrumney/go-lsp/lsp"
 
+	"github.com/infracost/go-proto/pkg/rat"
 	"github.com/infracost/lsp/internal/scanner"
 )
+
+type codeLensEntry struct {
+	lens     lsp.CodeLens
+	kind     int
+	amount   *rat.Rat
+	priority int
+}
 
 // CodeLens implements server.CodeLensHandler.
 func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.CodeLens, error) {
@@ -35,7 +44,27 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 		tagViolationsByAddr[v.Address] = append(tagViolationsByAddr[v.Address], v)
 	}
 
-	lenses := make([]lsp.CodeLens, 0, len(result.Resources)+len(result.ModuleCosts))
+	entries := make([]codeLensEntry, 0, len(result.Resources)+len(result.ModuleCosts))
+	seen := make(map[string]bool)
+	costByLine := make(map[int]codeLensEntry)
+
+	addIssueLens := func(rng lsp.Range, cmd *lsp.Command) {
+		key := codeLensDedupeKey(rng, cmd)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		entries = append(entries, codeLensEntry{lens: lsp.CodeLens{Range: rng, Command: cmd}, kind: 1})
+	}
+	addCostLens := func(rng lsp.Range, cmd *lsp.Command, amount *rat.Rat, priority int) {
+		line := rng.Start.Line
+		candidate := codeLensEntry{lens: lsp.CodeLens{Range: rng, Command: cmd}, kind: 0, amount: amount, priority: priority}
+		if existing, ok := costByLine[line]; ok && betterCodeLensCost(existing, candidate) {
+			return
+		}
+		costByLine[line] = candidate
+	}
+
 	for _, r := range result.Resources {
 		if r.Filename == "" || r.StartLine == 0 {
 			continue
@@ -52,36 +81,27 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 			End:   lsp.Position{Line: line, Character: 0},
 		}
 
-		// Cost lens — omitted when no pricing data is available.
+		// Cost lens — omitted when no pricing data is available. Only one cost lens
+		// is shown per line; module aggregate costs override resource costs below.
 		switch {
 		case !r.IsSupported:
-			lenses = append(lenses, lsp.CodeLens{
-				Range:   rng,
-				Command: revealResourceCommand("Not supported", uri, line),
-			})
-		case r.IsFree || (r.MonthlyCost != nil && !r.MonthlyCost.IsZero()):
-			lenses = append(lenses, lsp.CodeLens{
-				Range:   rng,
-				Command: revealResourceCommand(scanner.FormatCostCurrency(r.MonthlyCost, currency)+"/mo", uri, line),
-			})
+			addCostLens(rng, revealResourceCommand("Not supported", uri, line, r.Name), nil, 1)
+		case r.IsFree:
+			addCostLens(rng, revealResourceCommand(scanner.FormatCostCurrency(r.MonthlyCost, currency)+"/mo", uri, line, r.Name), rat.Zero, 1)
+		case r.MonthlyCost != nil && !r.MonthlyCost.IsZero():
+			addCostLens(rng, revealResourceCommand(scanner.FormatCostCurrency(r.MonthlyCost, currency)+"/mo", uri, line, r.Name), r.MonthlyCost, 1)
 		}
 
 		// FinOps violations lens.
 		if vs := violationsByAddr[r.Name]; len(vs) > 0 {
 			label := fmt.Sprintf("%d FinOps %s", len(vs), pluralize(len(vs), "issue", "issues"))
-			lenses = append(lenses, lsp.CodeLens{
-				Range:   rng,
-				Command: revealResourceCommand(label, uri, line),
-			})
+			addIssueLens(rng, revealResourceCommand(label, uri, line, r.Name))
 		}
 
 		// Tag violations lens.
 		if vs := tagViolationsByAddr[r.Name]; len(vs) > 0 {
 			label := fmt.Sprintf("%d tag %s", len(vs), pluralize(len(vs), "issue", "issues"))
-			lenses = append(lenses, lsp.CodeLens{
-				Range:   rng,
-				Command: revealResourceCommand(label, uri, line),
-			})
+			addIssueLens(rng, revealResourceCommand(label, uri, line, r.Name))
 		}
 	}
 
@@ -102,24 +122,79 @@ func (s *Server) CodeLens(_ context.Context, params *lsp.CodeLensParams) ([]lsp.
 		}
 
 		title := fmt.Sprintf("%s/mo (%d %s)", scanner.FormatCostCurrency(mc.MonthlyCost, currency), mc.ResourceCount, pluralize(mc.ResourceCount, "resource", "resources"))
-		lenses = append(lenses, lsp.CodeLens{
-			Range:   rng,
-			Command: revealResourceCommand(title, uri, line),
-		})
+		addCostLens(rng, revealResourceCommand(title, uri, line), mc.MonthlyCost, 1000+mc.ResourceCount)
+	}
+
+	for _, entry := range costByLine {
+		entries = append(entries, entry)
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		li := entries[i].lens.Range.Start.Line
+		lj := entries[j].lens.Range.Start.Line
+		if li != lj {
+			return li < lj
+		}
+		if entries[i].kind != entries[j].kind {
+			return entries[i].kind < entries[j].kind
+		}
+		return codeLensTitle(entries[i].lens) < codeLensTitle(entries[j].lens)
+	})
+
+	lenses := make([]lsp.CodeLens, 0, len(entries))
+	for _, entry := range entries {
+		lenses = append(lenses, entry.lens)
 	}
 
 	slog.Debug("codeLens: returning", "uri", uri, "lenses", len(lenses))
 	return lenses, nil
 }
 
-func revealResourceCommand(title, uri string, line int) *lsp.Command {
+func betterCodeLensCost(existing, candidate codeLensEntry) bool {
+	if existing.amount != nil && candidate.amount != nil {
+		if existing.amount.GreaterThan(candidate.amount) {
+			return true
+		}
+		if candidate.amount.GreaterThan(existing.amount) {
+			return false
+		}
+		return existing.priority >= candidate.priority
+	}
+	if existing.amount != nil {
+		return true
+	}
+	if candidate.amount != nil {
+		return false
+	}
+	return existing.priority >= candidate.priority
+}
+
+func codeLensTitle(lens lsp.CodeLens) string {
+	if lens.Command == nil {
+		return ""
+	}
+	return lens.Command.Title
+}
+
+func codeLensDedupeKey(rng lsp.Range, cmd *lsp.Command) string {
+	if cmd == nil {
+		return fmt.Sprintf("%d:%d:<nil>", rng.Start.Line, rng.Start.Character)
+	}
+	return fmt.Sprintf("%d:%d:%s:%s", rng.Start.Line, rng.Start.Character, cmd.Command, cmd.Title)
+}
+
+func revealResourceCommand(title, uri string, line int, address ...string) *lsp.Command {
 	// json.Marshal cannot fail for string or int values.
 	uriArg, _ := json.Marshal(uri)   //nolint:errcheck
 	lineArg, _ := json.Marshal(line) //nolint:errcheck
+	args := []json.RawMessage{uriArg, lineArg}
+	if len(address) > 0 && address[0] != "" {
+		addrArg, _ := json.Marshal(address[0]) //nolint:errcheck
+		args = append(args, addrArg)
+	}
 	return &lsp.Command{
 		Title:     title,
 		Command:   "infracost.revealResource",
-		Arguments: []json.RawMessage{uriArg, lineArg},
+		Arguments: args,
 	}
 }
 

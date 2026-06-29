@@ -30,9 +30,10 @@ import (
 
 // Settings holds client-provided configuration synced via workspace/didChangeConfiguration.
 type Settings struct {
-	RunParamsCacheTTLSeconds int    `json:"runParamsCacheTTLSeconds"`
-	EnableDiagnostics        *bool  `json:"enableDiagnostics"`
-	Currency                 string `json:"currency"`
+	RunParamsCacheTTLSeconds   int    `json:"runParamsCacheTTLSeconds"`
+	EnableDiagnostics          *bool  `json:"enableDiagnostics"`
+	DisplayRemoteModulesInTree bool   `json:"displayRemoteModulesInTree"`
+	Currency                   string `json:"currency"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
