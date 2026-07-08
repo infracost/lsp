@@ -1,13 +1,13 @@
 module github.com/infracost/lsp
 
-go 1.25.5
+go 1.25.11
 
 require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
-	github.com/infracost/config v0.9.3
-	github.com/infracost/go-proto v1.22.0
-	github.com/infracost/proto v1.147.0
+	github.com/infracost/config v0.10.0
+	github.com/infracost/go-proto v1.25.1
+	github.com/infracost/proto v1.156.0
 	github.com/owenrumney/go-lsp v0.2.3
 )
 
@@ -15,7 +15,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/google/go-github/v83 v83.0.0
 	github.com/google/uuid v1.6.0
-	github.com/infracost/cli v0.0.14-0.20260626161854-3bc24d44fa2f
+	github.com/infracost/cli v0.0.14-0.20260708093138-9e810f7555ea
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/oauth2 v0.35.0
 	google.golang.org/grpc v1.79.3
@@ -81,14 +81,14 @@ require (
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	golang.org/x/image v0.39.0 // indirect
-	golang.org/x/mod v0.34.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/term v0.42.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/term v0.44.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	golang.org/x/tools v0.43.0 // indirect
+	golang.org/x/tools v0.45.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251222181119-0a764e51fe1b // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
