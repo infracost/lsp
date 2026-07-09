@@ -120,9 +120,13 @@ func (s *Server) SetServer(srv *server.Server) {
 
 // Initialize implements server.LifecycleHandler.
 func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*lsp.InitializeResult, error) {
+	// Capture logs into the debug trace (for infracost/exportTrace) without
+	// silencing stderr: tee to both the existing default handler — which still
+	// honours INFRACOST_LOG_LEVEL/cfg.SlogLevel — and the capture handler,
+	// rather than replacing stderr output the moment a client connects.
 	if s.srv != nil {
 		if h := s.srv.DebugHandler(); h != nil {
-			slog.SetDefault(slog.New(h))
+			slog.SetDefault(slog.New(newFanoutHandler(slog.Default().Handler(), h)))
 		}
 	}
 

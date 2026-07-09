@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/infracost/lsp/internal/scanner"
+	"github.com/owenrumney/go-lsp/lsp"
 )
 
 const scanDebounce = 300 * time.Millisecond
@@ -118,6 +120,7 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 			return
 		}
 		slog.Error("analyze: scan failed", "project", project.Name, "error", err, "elapsed", elapsed)
+		s.showMessage(ctx, lsp.MessageTypeWarning, fmt.Sprintf("Infracost: failed to scan %s: %s", project.Name, err))
 		progress.End(ctx, fmt.Sprintf("Scan failed: %s", err))
 		s.refreshCodeLenses()
 		s.refreshInlayHints()
@@ -201,6 +204,7 @@ func (s *Server) analyzeFullScan(uri string) {
 
 	totalResources := 0
 	totalViolations := 0
+	var failed []string
 
 	for i, project := range cfg.Projects {
 		if !s.isCurrentScanVersion(scanVersion) {
@@ -220,6 +224,7 @@ func (s *Server) analyzeFullScan(uri string) {
 
 		if err != nil {
 			slog.Error("analyzeFullScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
+			failed = append(failed, project.Name)
 			continue
 		}
 		if !s.isCurrentScanVersion(scanVersion) {
@@ -242,6 +247,14 @@ func (s *Server) analyzeFullScan(uri string) {
 		s.refreshCodeLenses()
 		s.refreshInlayHints()
 		s.publishDiagnostics()
+	}
+
+	// A silent "0 resources" is ambiguous — it can mean "nothing to cost" or
+	// "we failed to scan". Surface failures so the user can tell them apart.
+	if len(failed) > 0 {
+		s.showMessage(ctx, lsp.MessageTypeWarning, fmt.Sprintf(
+			"Infracost: failed to scan %d of %d project(s): %s. See the Infracost output for details.",
+			len(failed), len(cfg.Projects), strings.Join(failed, ", ")))
 	}
 
 	progress.End(ctx, fmt.Sprintf("Scan complete — %d resources, %d violations", totalResources, totalViolations))
