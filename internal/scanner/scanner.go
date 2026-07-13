@@ -1506,19 +1506,15 @@ func IsRemoteSource(filename string) bool {
 }
 
 func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error) {
-	env := envToMap()
-
 	configPath := filepath.Join(dir, "infracost.yml")
 	if _, err := os.Stat(configPath); err == nil {
 		slog.Debug("loadConfig: found infracost.yml", "path", configPath)
-		return repoconfig.LoadConfigFile(configPath, dir, env)
+		return repoconfig.LoadConfigFile(configPath, dir)
 	}
 
 	slog.Debug("loadConfig: no infracost.yml, auto-generating config", "dir", dir)
 
-	opts := []repoconfig.GenerationOption{
-		repoconfig.WithEnvVars(env),
-	}
+	var opts []repoconfig.GenerationOption
 
 	if configTemplate != "" {
 		opts = append(opts, repoconfig.WithTemplate(configTemplate))
@@ -1534,17 +1530,6 @@ func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error
 	}
 
 	return repoconfig.Generate(context.Background(), dir, opts...)
-}
-
-func envToMap() map[string]string {
-	env := make(map[string]string)
-	for _, e := range os.Environ() {
-		k, v, ok := strings.Cut(e, "=")
-		if ok {
-			env[k] = v
-		}
-	}
-	return env
 }
 
 type regexReplacement struct {
