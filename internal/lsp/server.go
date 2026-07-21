@@ -24,6 +24,7 @@ import (
 	"github.com/infracost/lsp/internal/api"
 	"github.com/infracost/lsp/internal/events"
 	"github.com/infracost/lsp/internal/ignore"
+	"github.com/infracost/lsp/internal/proxy"
 	"github.com/infracost/lsp/internal/scanner"
 	"github.com/infracost/lsp/version"
 )
@@ -34,6 +35,15 @@ type Settings struct {
 	EnableDiagnostics          *bool  `json:"enableDiagnostics"`
 	DisplayRemoteModulesInTree bool   `json:"displayRemoteModulesInTree"`
 	Currency                   string `json:"currency"`
+}
+
+type initializationOptions struct {
+	ExtensionVersion string         `json:"extensionVersion"`
+	ClientName       string         `json:"clientName"`
+	SupportsCodeLens *bool          `json:"supportsCodeLens"`
+	Currency         string         `json:"currency"`
+	CheckForUpdates  *bool          `json:"checkForUpdates"`
+	Proxy            proxy.Settings `json:"proxy"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
@@ -144,7 +154,9 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 		"client", params.ClientInfo,
 	)
 
-	s.registerClientMetadata(params)
+	initOpts := parseInitializationOptions(params)
+	proxy.Apply(initOpts.Proxy)
+	s.registerClientMetadata(params, initOpts)
 
 	if s.scanner != nil {
 		s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
@@ -158,7 +170,11 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 		}
 	}
 
-	go s.checkForUpdate() //nolint:gosec // G118: intentionally outlives request context
+	if initOpts.CheckForUpdates == nil || *initOpts.CheckForUpdates {
+		go s.checkForUpdate() //nolint:gosec // G118: intentionally outlives request context
+	} else {
+		slog.Info("update check disabled")
+	}
 
 	if s.workspaceRoot != "" {
 		go s.validateAuthAndLoadConfigAndScan() //nolint:gosec // G118: intentionally outlives request context
@@ -200,7 +216,7 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 // registerClientMetadata updates event metadata with client information from the
 // initialize request. The IDE name and extension version (from initializationOptions)
 // take priority, with "infracost-ls" and the LSP version as fallbacks.
-func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
+func (s *Server) registerClientMetadata(params *lsp.InitializeParams, initOpts initializationOptions) {
 	if params.ClientInfo != nil {
 		if params.ClientInfo.Name != "" {
 			events.RegisterMetadata("caller", params.ClientInfo.Name)
@@ -208,18 +224,6 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 		}
 	}
 
-	var initOpts struct {
-		ExtensionVersion string `json:"extensionVersion"`
-		ClientName       string `json:"clientName"`
-		SupportsCodeLens *bool  `json:"supportsCodeLens"`
-		Currency         string `json:"currency"`
-	}
-	if len(params.InitializationOptions) > 0 {
-		slog.Debug("initializationOptions", "raw", string(params.InitializationOptions))
-		if err := json.Unmarshal(params.InitializationOptions, &initOpts); err != nil {
-			slog.Warn("failed to parse initializationOptions", "error", err)
-		}
-	}
 	if initOpts.ClientName != "" {
 		events.RegisterMetadata("caller", initOpts.ClientName)
 		events.RegisterMetadata("cliPlatform", initOpts.ClientName)
@@ -244,6 +248,17 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams) {
 	if initOpts.SupportsCodeLens == nil || *initOpts.SupportsCodeLens {
 		s.clientSupportsCodeLens = true
 	}
+}
+
+func parseInitializationOptions(params *lsp.InitializeParams) initializationOptions {
+	var initOpts initializationOptions
+	if len(params.InitializationOptions) > 0 {
+		slog.Debug("initializationOptions", "raw", string(params.InitializationOptions))
+		if err := json.Unmarshal(params.InitializationOptions, &initOpts); err != nil {
+			slog.Warn("failed to parse initializationOptions", "error", err)
+		}
+	}
+	return initOpts
 }
 
 // ExecuteCommand implements server.ExecuteCommandHandler.
