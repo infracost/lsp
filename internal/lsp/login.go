@@ -10,6 +10,7 @@ import (
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/infracost/cli/pkg/environment"
 	"github.com/infracost/lsp/internal/config"
+	"github.com/infracost/lsp/internal/proxy"
 	"github.com/owenrumney/go-lsp/lsp"
 	"golang.org/x/oauth2"
 )
@@ -26,7 +27,7 @@ func (s *Server) HandleLogin(_ context.Context, _ json.RawMessage) (any, error) 
 	s.loginInProgress = true
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(proxy.OAuthContext(context.Background()), 5*time.Minute)
 
 	s.mu.Lock()
 	s.loginCancel = cancel
