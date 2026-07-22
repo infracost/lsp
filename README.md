@@ -26,9 +26,6 @@ Find the extension either through the IDE Extension/Plugin marketplace or in the
 
 ## Quickstart
 
-> [!IMPORTANT]
-> You need to have done a `login` with the [new cli](https://github.com/infracost/cli) - this will create your token file that the LSP currently piggy backs on. Without this, a lot of functionality won't work because it can't get your org, talk to the pricing server, talk to the dashboard, or anything.
-
 1. Install one of the editor extensions above.
 2. Open a directory containing `.tf`, `.yaml`, or `.json` IaC files. Cost lenses should appear above resource blocks.
 
