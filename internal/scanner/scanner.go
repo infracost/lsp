@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,6 +42,59 @@ import (
 	"github.com/infracost/lsp/internal/dashboard"
 	"github.com/infracost/lsp/internal/vcs"
 )
+
+var featureFlagUnmarshalOptions = protojson.UnmarshalOptions{DiscardUnknown: true}
+
+func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
+	plugins, err := s.Plugins.ProviderPlugins(ctx)
+	if err != nil {
+		return nil, nil, []string{fmt.Sprintf("loading provider plugins: %v", err)}
+	}
+
+	var resources []*provider.Resource
+	var finops []*provider.FinopsPolicyResult
+	var errs []string
+	for _, p := range plugins {
+		name := p.Info.GetName()
+		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		processStart := time.Now()
+		resp, err := p.Process(ctx, &pluginpb.ProcessRequest{Input: input})
+		cancel()
+		processDuration := time.Since(processStart)
+		if err != nil {
+			if isTransportError(err) {
+				slog.Warn("processProvider: transport error, resetting plugins", "provider", name, "error", err)
+				s.resetPlugins()
+			}
+			slog.Error("processProvider: Process failed", "provider", name, "error", err, "elapsed", processDuration)
+			errs = append(errs, fmt.Sprintf("%s provider error: %v", name, err))
+			continue
+		}
+		out := resp.GetOutput()
+		if out == nil {
+			slog.Debug("processProvider: complete", "provider", name, "resources", 0, "finops", 0, "elapsed", processDuration)
+			continue
+		}
+		resources = append(resources, out.Resources...)
+		finops = append(finops, out.FinopsResults...)
+		slog.Debug("processProvider: complete", "provider", name, "resources", len(out.Resources), "finops", len(out.FinopsResults), "elapsed", processDuration)
+	}
+	return resources, finops, errs
+}
+
+func (s *Scanner) applyFeatureFlags(params dashboard.RunParameters) error {
+	if len(params.FeatureFlags) == 0 || s.Plugins == nil {
+		return nil
+	}
+	flags := new(event.FeatureFlags)
+	if err := featureFlagUnmarshalOptions.Unmarshal(params.FeatureFlags, flags); err != nil {
+		return fmt.Errorf("unmarshal feature flags: %w", err)
+	}
+	s.Plugins.EnableK8sPlugins = flags.GetEnableK8SPlugins()
+	return nil
+}
+
+var errProjectSkipped = errors.New("project skipped")
 
 // Scanner orchestrates parsing and pricing of IaC projects.
 type Scanner struct {
@@ -177,6 +231,9 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	if err != nil {
 		slog.Warn("fetchRunParams: failed to get run parameters", "error", err)
 		return ""
+	}
+	if err := s.applyFeatureFlags(params); err != nil {
+		slog.Warn("fetchRunParams: failed to apply feature flags", "error", err)
 	}
 
 	tagPolicies := make([]*event.TagPolicy, 0, len(params.TagPolicies))
@@ -516,6 +573,10 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	parseDuration := time.Since(parseStart)
 
 	result := &ScanResult{}
+	if errors.Is(err, errProjectSkipped) {
+		slog.Debug("scanProject: project skipped", "name", project.Name, "type", projectType)
+		return result, nil
+	}
 
 	// Check diagnostics even on error — the parser may return both.
 	if parseResp != nil && parseResp.Diagnostics != nil {
@@ -620,7 +681,6 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	}
 
 	allResources := make([]*provider.Resource, 0, len(tree.GetUnsupportedResources()))
-	var allFinops []*provider.FinopsPolicyResult
 
 	// Parser-flagged unsupported resources never reach a provider, but tag
 	// policies still evaluate against them, so seed the result set here.
@@ -635,18 +695,10 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		allResources = append(allResources, pr)
 	}
 
-	for _, rp := range requiredProviders {
-		rs, ps, provErrs := s.processProvider(ctx, rp, input)
-		slog.Debug("scanProject: provider complete",
-			"provider", rp.String(),
-			"resources", len(rs),
-			"finops_results", len(ps),
-			"errors", len(provErrs),
-		)
-		allResources = append(allResources, rs...)
-		allFinops = append(allFinops, ps...)
-		result.Errors = append(result.Errors, provErrs...)
-	}
+	rs, ps, provErrs := s.processLoadedProviders(ctx, input)
+	allResources = append(allResources, rs...)
+	allFinops := ps
+	result.Errors = append(result.Errors, provErrs...)
 
 	exchangeRate, err := s.currencyExchangeRate(ctx, currency, token)
 	if err != nil {
@@ -788,80 +840,6 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 	slog.Debug("attachPolicyDetails: attached", "uncached", len(uncached), "total_cached", totalCached)
 }
 
-func (s *Scanner) processProvider(ctx context.Context, prov provider.Provider, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
-	name := providerconv.FromProto(prov)
-
-	pluginName := providerPluginName(prov)
-	if pluginName == "" {
-		return nil, nil, []string{fmt.Sprintf("unknown provider: %s", name)}
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	processStart := time.Now()
-	rs, ps, err := s.runProvider(ctx, pluginName, input)
-	processDuration := time.Since(processStart)
-	if err != nil {
-		// A dead plugin subprocess sticks behind the manager's cache until we
-		// rebuild, so reset on transport errors to let the next scan reconnect.
-		if isTransportError(err) {
-			slog.Warn("processProvider: transport error, resetting plugins", "provider", name, "error", err)
-			s.resetPlugins()
-		}
-		slog.Error("processProvider: Process failed", "provider", name, "error", err, "elapsed", processDuration)
-		return nil, nil, []string{fmt.Sprintf("%s provider error: %v", name, err)}
-	}
-
-	slog.Debug("processProvider: complete", "provider", name, "resources", len(rs), "finops", len(ps), "elapsed", processDuration)
-	return rs, ps, nil
-}
-
-// runProvider loads the provider plugins, picks the one matching pluginName,
-// and runs it over the tree input.
-func (s *Scanner) runProvider(ctx context.Context, pluginName string, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, error) {
-	plugins, err := s.Plugins.ProviderPlugins(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading provider plugins: %w", err)
-	}
-
-	var pp *cliplugins.ProviderPlugin
-	for _, p := range plugins {
-		if p.Info.GetName() == pluginName {
-			pp = p
-			break
-		}
-	}
-	if pp == nil {
-		return nil, nil, fmt.Errorf("provider plugin %q not loaded", pluginName)
-	}
-
-	resp, err := pp.Process(ctx, &pluginpb.ProcessRequest{Input: input})
-	if err != nil {
-		return nil, nil, err
-	}
-	out := resp.GetOutput()
-	if out == nil {
-		return nil, nil, nil
-	}
-	return out.Resources, out.FinopsResults, nil
-}
-
-// providerPluginName maps a provider enum to the plugin name the CLI reports
-// (GetPluginInfo Name), or "" if unsupported.
-func providerPluginName(prov provider.Provider) string {
-	switch prov {
-	case provider.Provider_PROVIDER_AWS:
-		return "infracost/aws"
-	case provider.Provider_PROVIDER_GOOGLE:
-		return "infracost/google"
-	case provider.Provider_PROVIDER_AZURERM:
-		return "infracost/azure"
-	default:
-		return ""
-	}
-}
-
 func (s *Scanner) parse(ctx context.Context, path string, project *repoconfig.Project, rootDir string, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) (*pluginpb.ParseResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -873,6 +851,10 @@ func (s *Scanner) parse(ctx context.Context, path string, project *repoconfig.Pr
 		// Reset so the next scan retries.
 		s.resetPlugins()
 		return nil, fmt.Errorf("loading parser plugin for project type %q: %w", projectType, err)
+	}
+	if s.Plugins.SkipPluginExecution(pp.Info.GetName()) {
+		slog.Debug("parse: skipping project handled by gated plugin", "project_type", projectType, "plugin", pp.Info.GetName())
+		return nil, errProjectSkipped
 	}
 
 	genericOpts := buildGenericOptions(project, rootDir, namingPolicyAttributeRequirements(finopsPolicies))
@@ -1105,9 +1087,10 @@ func GetRequiredProvidersFromTree(tree *treepb.Tree) []provider.Provider {
 		out = append(out, p)
 	}
 	providerOrder := map[provider.Provider]int{
-		provider.Provider_PROVIDER_AWS:     0,
-		provider.Provider_PROVIDER_GOOGLE:  1,
-		provider.Provider_PROVIDER_AZURERM: 2,
+		provider.Provider_PROVIDER_AWS:        0,
+		provider.Provider_PROVIDER_GOOGLE:     1,
+		provider.Provider_PROVIDER_AZURERM:    2,
+		provider.Provider_PROVIDER_KUBERNETES: 3,
 	}
 	sort.Slice(out, func(i, j int) bool { return providerOrder[out[i]] < providerOrder[out[j]] })
 	return out
@@ -1458,7 +1441,7 @@ func resolveFilename(projectPath, filename string) string {
 }
 
 // IsRemoteSource reports whether a filename is a remote module source URL
-// (e.g. a GitHub blob URL or a git:: source) rather than a local file path.
+// (e.g. a GitHub blob URL or a git: source) rather than a local file path.
 func IsRemoteSource(filename string) bool {
 	return strings.Contains(filename, "://") || strings.HasPrefix(filename, "git::")
 }
@@ -1472,7 +1455,9 @@ func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error
 
 	slog.Debug("loadConfig: no infracost.yml, auto-generating config", "dir", dir)
 
-	var opts []repoconfig.GenerationOption
+	opts := []repoconfig.GenerationOption{
+		repoconfig.WithDefaultPluginDir(true),
+	}
 
 	if configTemplate != "" {
 		opts = append(opts, repoconfig.WithTemplate(configTemplate))

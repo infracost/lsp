@@ -76,6 +76,7 @@ type RunParameters struct {
 	FinopsPolicies    []json.RawMessage `json:"finopsPolicies"`
 	Guardrails        []json.RawMessage `json:"guardrails"`
 	ConfigTemplate    string            `json:"configTemplate"`
+	FeatureFlags      json.RawMessage   `json:"featureFlags"`
 }
 
 func (c *Client) RunParameters(ctx context.Context, organizationID, repoURL, branchName string) (RunParameters, error) {
@@ -89,6 +90,7 @@ func (c *Client) RunParameters(ctx context.Context, organizationID, repoURL, bra
     finopsPolicies
     guardrails
     configTemplate
+    featureFlags
   }
 }`
 
