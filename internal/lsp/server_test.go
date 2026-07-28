@@ -2,8 +2,6 @@ package lsp
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/owenrumney/go-lsp/lsp"
@@ -229,58 +227,37 @@ func TestIsSupportedFile(t *testing.T) {
 	}
 }
 
-func TestIsSupportedFile_CloudFormation(t *testing.T) {
+func TestIsSupportedFile_YAMLAndJSON(t *testing.T) {
 	tests := []struct {
-		name    string
-		ext     string
-		content string
-		want    bool
+		name string
+		ext  string
+		want bool
 	}{
 		{
-			name:    "yaml with Resources",
-			ext:     ".yaml",
-			content: "AWSTemplateFormatVersion: '2010-09-09'\nResources:\n  MyBucket:\n    Type: AWS::S3::Bucket\n",
-			want:    true,
+			name: "yaml file",
+			ext:  ".yaml",
+			want: true,
 		},
 		{
-			name:    "yml with Resources",
-			ext:     ".yml",
-			content: "Resources:\n  MyFunc:\n    Type: AWS::Lambda::Function\n",
-			want:    true,
+			name: "yml file",
+			ext:  ".yml",
+			want: true,
 		},
 		{
-			name:    "json with Resources",
-			ext:     ".json",
-			content: `{"AWSTemplateFormatVersion": "2010-09-09", "Resources": {}}`,
-			want:    true,
+			name: "json file",
+			ext:  ".json",
+			want: true,
 		},
 		{
-			name:    "yaml without cfn markers",
-			ext:     ".yaml",
-			content: "services:\n  web:\n    image: nginx\n",
-			want:    false,
-		},
-		{
-			name:    "json without cfn markers",
-			ext:     ".json",
-			content: `{"name": "my-package", "version": "1.0.0"}`,
-			want:    false,
-		},
-		{
-			name:    "empty yaml",
-			ext:     ".yaml",
-			content: "",
-			want:    false,
+			name: "uppercase yaml extension",
+			ext:  ".YAML",
+			want: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := filepath.Join(t.TempDir(), "template"+tt.ext)
-			err := os.WriteFile(f, []byte(tt.content), 0o644)
-			require.NoError(t, err)
-
-			uri := "file://" + f
+			uri := "file:///project/manifest" + tt.ext
 			assert.Equal(t, tt.want, isSupportedFile(uri), "isSupportedFile(%q)", tt.name)
 		})
 	}

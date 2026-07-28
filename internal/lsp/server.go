@@ -1,13 +1,11 @@
 package lsp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -847,29 +845,7 @@ func isSupportedFile(uri string) bool {
 	}
 
 	lower := strings.ToLower(uri)
-	if strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".json") {
-		return isCloudFormationFile(uriToPath(uri))
-	}
-	return false
-}
-
-func isCloudFormationFile(path string) bool {
-	cleanPath := filepath.Clean(path)
-	f, err := os.Open(cleanPath) //nolint:gosec // path is from trusted LSP workspace URIs
-	if err != nil {
-		return false
-	}
-	defer func() { _ = f.Close() }()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "Resources:") || strings.HasPrefix(line, "AWSTemplateFormatVersion:") ||
-			strings.Contains(line, `"Resources"`) || strings.Contains(line, `"AWSTemplateFormatVersion"`) {
-			return true
-		}
-	}
-	return false
+	return strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".json")
 }
 
 func ptrTo[T any](v T) *T {
