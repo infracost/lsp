@@ -1450,7 +1450,7 @@ func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error
 	configPath := filepath.Join(dir, "infracost.yml")
 	if _, err := os.Stat(configPath); err == nil {
 		slog.Debug("loadConfig: found infracost.yml", "path", configPath)
-		return repoconfig.LoadConfigFile(configPath, dir)
+		return repoconfig.LoadConfigFile(context.Background(), configPath, dir, repoconfig.WithLoadDefaultPluginDir(true))
 	}
 
 	slog.Debug("loadConfig: no infracost.yml, auto-generating config", "dir", dir)
