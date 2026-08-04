@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,8 +42,6 @@ import (
 	"github.com/infracost/lsp/internal/vcs"
 )
 
-var featureFlagUnmarshalOptions = protojson.UnmarshalOptions{DiscardUnknown: true}
-
 func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
 	plugins, err := s.Plugins.ProviderPlugins(ctx)
 	if err != nil {
@@ -81,20 +78,6 @@ func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.Tr
 	}
 	return resources, finops, errs
 }
-
-func (s *Scanner) applyFeatureFlags(params dashboard.RunParameters) error {
-	if len(params.FeatureFlags) == 0 || s.Plugins == nil {
-		return nil
-	}
-	flags := new(event.FeatureFlags)
-	if err := featureFlagUnmarshalOptions.Unmarshal(params.FeatureFlags, flags); err != nil {
-		return fmt.Errorf("unmarshal feature flags: %w", err)
-	}
-	s.Plugins.EnableK8sPlugins = flags.GetEnableK8SPlugins()
-	return nil
-}
-
-var errProjectSkipped = errors.New("project skipped")
 
 // Scanner orchestrates parsing and pricing of IaC projects.
 type Scanner struct {
@@ -232,10 +215,6 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 		slog.Warn("fetchRunParams: failed to get run parameters", "error", err)
 		return ""
 	}
-	if err := s.applyFeatureFlags(params); err != nil {
-		slog.Warn("fetchRunParams: failed to apply feature flags", "error", err)
-	}
-
 	tagPolicies := make([]*event.TagPolicy, 0, len(params.TagPolicies))
 	for i, raw := range params.TagPolicies {
 		slog.Debug("fetchRunParams: raw tag policy", "index", i, "json", string(raw))
@@ -573,10 +552,6 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	parseDuration := time.Since(parseStart)
 
 	result := &ScanResult{}
-	if errors.Is(err, errProjectSkipped) {
-		slog.Debug("scanProject: project skipped", "name", project.Name, "type", projectType)
-		return result, nil
-	}
 
 	// Check diagnostics even on error — the parser may return both.
 	if parseResp != nil && parseResp.Diagnostics != nil {
@@ -852,11 +827,6 @@ func (s *Scanner) parse(ctx context.Context, path string, project *repoconfig.Pr
 		s.resetPlugins()
 		return nil, fmt.Errorf("loading parser plugin for project type %q: %w", projectType, err)
 	}
-	if s.Plugins.SkipPluginExecution(pp.Info.GetName()) {
-		slog.Debug("parse: skipping project handled by gated plugin", "project_type", projectType, "plugin", pp.Info.GetName())
-		return nil, errProjectSkipped
-	}
-
 	genericOpts := buildGenericOptions(project, rootDir, namingPolicyAttributeRequirements(finopsPolicies))
 	rawOpts, err := buildIaCOptions(project, projectType)
 	if err != nil {
