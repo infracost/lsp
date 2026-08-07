@@ -5,9 +5,9 @@ go 1.25.11
 require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
-	github.com/infracost/config v0.15.0
-	github.com/infracost/go-proto v1.26.0
-	github.com/infracost/proto v1.162.0
+	github.com/infracost/config v0.17.0
+	github.com/infracost/go-proto v1.30.0
+	github.com/infracost/proto v1.165.0
 	github.com/owenrumney/go-lsp v0.2.3
 )
 
@@ -15,7 +15,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/google/go-github/v83 v83.0.0
 	github.com/google/uuid v1.6.0
-	github.com/infracost/cli v0.0.14-0.20260804140208-7a2d6f549f20
+	github.com/infracost/cli v0.0.14-0.20260807035530-c304cbdee40f
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/grpc v1.82.1
