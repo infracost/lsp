@@ -85,12 +85,12 @@ func TestBicepEnabled(t *testing.T) {
 	// bicepEnabled: the plugin inherits this process's environment, so a value
 	// one side reads as "on" and the other as "off" means the server analyzes
 	// files the plugin ignores, or the reverse.
-	// The leading space in " true" is the point — the value is trimmed before
-	// it is compared — so gocritic's suspicious-whitespace check is muted here.
-	tests := map[string]bool{ //nolint:gocritic
-		"true":  true,
-		"TRUE":  true,
-		" true": true,
+	tests := map[string]bool{
+		"true": true,
+		"TRUE": true,
+		// The leading space is the case being tested: the value is trimmed
+		// before it is compared.
+		" true": true, //nolint:gocritic // deliberate whitespace in the key
 		"1":     true,
 		"yes":   true,
 		"on":    true,
