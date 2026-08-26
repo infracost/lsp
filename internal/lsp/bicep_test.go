@@ -83,9 +83,11 @@ func TestApplyBicepSetting(t *testing.T) {
 func TestBicepEnabled(t *testing.T) {
 	// The accepted spellings must stay in step with the ARM plugin's own
 	// bicepEnabled: the plugin inherits this process's environment, so a value
-	// one side reads as "on" and the other as "off" means the server analyses
+	// one side reads as "on" and the other as "off" means the server analyzes
 	// files the plugin ignores, or the reverse.
-	tests := map[string]bool{
+	// The leading space in " true" is the point — the value is trimmed before
+	// it is compared — so gocritic's suspicious-whitespace check is muted here.
+	tests := map[string]bool{ //nolint:gocritic
 		"true":  true,
 		"TRUE":  true,
 		" true": true,

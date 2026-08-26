@@ -317,7 +317,7 @@ func applyBicepSetting(enable *bool) {
 // bicepEnabled reports whether the ARM plugin will claim Bicep files. It reads
 // the same variable with the same accepted values as the plugin does, because
 // the plugin inherits this process's environment and the two must agree about
-// what "on" means — otherwise the server would analyse files the plugin
+// what "on" means — otherwise the server would analyze files the plugin
 // silently ignores, or ignore files it would have priced.
 func bicepEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(bicepEnabledEnv))) {
