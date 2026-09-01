@@ -25,6 +25,30 @@ type ResourceResult struct {
 	IsFree      bool
 }
 
+// MissingPriceComponents returns the names of components that arrived with no price.
+func (r ResourceResult) MissingPriceComponents() []string {
+	return r.componentNames(func(c CostComponent) bool { return c.PriceMissing })
+}
+
+// ZeroPriceComponents returns the names of components priced at zero against a
+// non-zero quantity.
+func (r ResourceResult) ZeroPriceComponents() []string {
+	return r.componentNames(func(c CostComponent) bool { return c.PriceZero })
+}
+
+func (r ResourceResult) componentNames(match func(CostComponent) bool) []string {
+	if !r.IsSupported || r.IsFree {
+		return nil
+	}
+	var names []string
+	for _, c := range r.CostComponents {
+		if match(c) {
+			names = append(names, c.Name)
+		}
+	}
+	return names
+}
+
 // ModuleCall describes a module block in a resource's call stack.
 type ModuleCall struct {
 	Name      string // e.g. "module.dashboard" or "module.dashboard.module.eks"
@@ -40,6 +64,14 @@ type CostComponent struct {
 	MonthlyQuantity   *rat.Rat
 	TotalMonthlyCost  *rat.Rat
 	PriceWasHardcoded bool
+
+	// PriceMissing is set when the plugin returned no price at all.
+	PriceMissing bool
+
+	// PriceZero is set when a zero price arrived against a non-zero quantity
+	// and the plugin did not flag the lookup as failed. Mutually exclusive with
+	// PriceMissing. A genuinely free component looks the same.
+	PriceZero bool
 }
 
 // FinopsViolation represents a FinOps policy violation for a resource.
@@ -154,9 +186,12 @@ func convertCostComponent(c *provider.CostComponent, exchangeRate *rat.Rat) Cost
 	monthlyQty := rat.Zero
 	price := rat.Zero
 	totalMonthlyCost := rat.Zero
+	rawPriceZero := false
 
 	if c.PeriodPrice != nil {
-		price = applyDiscount(rat.FromProto(c.PeriodPrice.Price), rat.FromProto(c.DiscountRate))
+		rawPrice := rat.FromProto(c.PeriodPrice.Price)
+		rawPriceZero = rawPrice.IsZero()
+		price = applyDiscount(rawPrice, rat.FromProto(c.DiscountRate))
 		if c.PriceWasHardcoded && exchangeRate != nil {
 			price = price.Mul(exchangeRate)
 		}
@@ -166,6 +201,8 @@ func convertCostComponent(c *provider.CostComponent, exchangeRate *rat.Rat) Cost
 		}
 	}
 
+	priceMissing := c.PriceNotFound || c.PeriodPrice == nil
+
 	return CostComponent{
 		Name:              c.Name,
 		Unit:              c.Unit,
@@ -173,5 +210,7 @@ func convertCostComponent(c *provider.CostComponent, exchangeRate *rat.Rat) Cost
 		MonthlyQuantity:   monthlyQty,
 		TotalMonthlyCost:  totalMonthlyCost,
 		PriceWasHardcoded: c.PriceWasHardcoded,
+		PriceMissing:      priceMissing,
+		PriceZero:         !priceMissing && rawPriceZero && !monthlyQty.IsZero(),
 	}
 }
