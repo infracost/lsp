@@ -89,6 +89,7 @@ func main() {
 		DashboardEndpoint: cfg.DashboardEndpoint,
 		TokenSource:       tokenSource,
 		HTTPClient:        httpClient,
+		ScanTimeout:       cfg.ScanTimeout,
 		OnOrgID: func(id string) {
 			apiTransport.SetOrgID(id)
 			events.RegisterMetadata("orgId", id)

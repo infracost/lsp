@@ -2,7 +2,9 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/owenrumney/go-lsp/lsp"
 	"github.com/owenrumney/go-lsp/servertest"
@@ -66,6 +68,64 @@ func TestDidChangeConfigurationCurrency(t *testing.T) {
 	assert.Equal(t, "EUR", srv.settings.Currency)
 	assert.True(t, srv.settings.DisplayRemoteModulesInTree)
 	assert.Equal(t, "EUR", scn.CurrencyOrDefault())
+}
+
+func TestScanTimeoutSetting(t *testing.T) {
+	t.Run("initializationOptions applies before the first scan", func(t *testing.T) {
+		scn := &scanner.Scanner{}
+		scn.Init()
+		srv := NewServer(scn, nil, api.NewTokenSource(nil))
+
+		_, err := srv.Initialize(context.Background(), &lsp.InitializeParams{
+			InitializationOptions: json.RawMessage(`{"scanTimeoutSeconds":900}`),
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, 15*time.Minute, scn.ScanTimeoutOrDefault())
+	})
+
+	t.Run("didChangeConfiguration overrides the baseline", func(t *testing.T) {
+		scn := &scanner.Scanner{ScanTimeout: 4 * time.Minute}
+		srv := NewServer(scn, nil, api.NewTokenSource(nil))
+
+		err := srv.DidChangeConfiguration(context.Background(), &lsp.DidChangeConfigurationParams{
+			Settings: map[string]any{
+				"infracost": map[string]any{"scanTimeoutSeconds": 720},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 12*time.Minute, scn.ScanTimeoutOrDefault())
+
+		// Clearing the setting must not clobber INFRACOST_LSP_SCAN_TIMEOUT.
+		err = srv.DidChangeConfiguration(context.Background(), &lsp.DidChangeConfigurationParams{
+			Settings: map[string]any{
+				"infracost": map[string]any{"scanTimeoutSeconds": 0},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 4*time.Minute, scn.ScanTimeoutOrDefault())
+	})
+
+	// VS Code sends its first didChangeConfiguration moments after initialize,
+	// carrying nothing while the setting is undeclared in package.json. That
+	// must not wipe the value initialize just applied (FIX-619).
+	t.Run("an empty didChangeConfiguration does not wipe initializationOptions", func(t *testing.T) {
+		scn := &scanner.Scanner{}
+		scn.Init()
+		srv := NewServer(scn, nil, api.NewTokenSource(nil))
+
+		_, err := srv.Initialize(context.Background(), &lsp.InitializeParams{
+			InitializationOptions: json.RawMessage(`{"scanTimeoutSeconds":1800}`),
+		})
+		require.NoError(t, err)
+		require.Equal(t, 30*time.Minute, scn.ScanTimeoutOrDefault())
+
+		err = srv.DidChangeConfiguration(context.Background(), &lsp.DidChangeConfigurationParams{
+			Settings: map[string]any{"infracost": map[string]any{"currency": "USD"}},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Minute, scn.ScanTimeoutOrDefault())
+	})
 }
 
 func TestUriToPath_Windows(t *testing.T) {

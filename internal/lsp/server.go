@@ -3,11 +3,13 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,9 @@ type Settings struct {
 	EnableDiagnostics          *bool  `json:"enableDiagnostics"`
 	DisplayRemoteModulesInTree bool   `json:"displayRemoteModulesInTree"`
 	Currency                   string `json:"currency"`
+	// ScanTimeoutSeconds overrides the per-project scan budget. Zero or absent
+	// falls back to INFRACOST_LSP_SCAN_TIMEOUT, then the scanner default.
+	ScanTimeoutSeconds int `json:"scanTimeoutSeconds"`
 }
 
 type initializationOptions struct {
@@ -42,9 +47,21 @@ type initializationOptions struct {
 	Currency         string         `json:"currency"`
 	CheckForUpdates  *bool          `json:"checkForUpdates"`
 	Proxy            proxy.Settings `json:"proxy"`
+	// ScanTimeoutSeconds mirrors the workspace setting. It has to arrive here
+	// too: didChangeConfiguration can land after the first scan has started,
+	// and the first scan is the one that pays for a cold module cache. It sets
+	// the baseline, so a later didChangeConfiguration carrying no value cannot
+	// wipe it.
+	ScanTimeoutSeconds int `json:"scanTimeoutSeconds"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
+
+// workspaceScanSlack is the headroom added *per project* to the workspace
+// ceiling, covering the work that sits outside a project's own scan budget:
+// diagnostics, code lens refreshes, event pushes. Per project rather than per
+// scan, so accumulated overhead can never eat into a later project's budget.
+const workspaceScanSlack = time.Minute
 
 // isWindows controls whether uriToPath applies Windows-specific path
 // transforms (drive-letter stripping, separator conversion). It is a var
@@ -64,6 +81,19 @@ type Server struct {
 	config         *repoconfig.Config
 	scanVersion    int64
 	projectResults map[string]*scanner.ScanResult // project name → result
+
+	// projectErrors holds the last scan failure per project, so a failed scan is
+	// distinguishable from a project that genuinely has no resources.
+	projectErrors map[string]ProjectScanError
+
+	// workspaceScanCancel stops the in-flight whole-workspace scan. The
+	// per-project budgets bound each individual scan, but without this nothing
+	// stops a superseded workspace scan from running on against a stale root or
+	// plugins that have already been killed under it. Nil means no scan is
+	// running; workspaceScanVersion identifies which scan owns the entry, so a
+	// scan finishing late cannot clear its successor's.
+	workspaceScanCancel  context.CancelFunc
+	workspaceScanVersion int64
 
 	// filesWithDiagnostics tracks URIs that currently have published diagnostics.
 	// Used to clear diagnostics when violations are resolved.
@@ -107,6 +137,7 @@ func NewServer(s *scanner.Scanner, eventsClient events.Client, ts *api.TokenSour
 		tokenSource:          ts,
 		ignores:              ignores,
 		projectResults:       make(map[string]*scanner.ScanResult),
+		projectErrors:        make(map[string]ProjectScanError),
 		filesWithDiagnostics: make(map[string]struct{}),
 		scanningProjects:     make(map[string]struct{}),
 		dirtyProjects:        make(map[string]string),
@@ -158,6 +189,7 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 
 	if s.scanner != nil {
 		s.scanner.SetRunParamsTTL(time.Duration(defaultRunParamsCacheTTLSeconds) * time.Second)
+		s.scanner.SetBaselineScanTimeoutSeconds(initOpts.ScanTimeoutSeconds)
 	}
 
 	// Pre-seed the org ID on the API transport from the locally stored org
@@ -308,6 +340,8 @@ func (s *Server) Shutdown(_ context.Context) error {
 	}
 	s.mu.Unlock()
 
+	s.cancelWorkspaceScan()
+
 	if s.scanner != nil {
 		s.scanner.Close()
 	}
@@ -370,6 +404,7 @@ func (s *Server) DidChangeConfiguration(_ context.Context, params *lsp.DidChange
 	}
 	if s.scanner != nil {
 		s.scanner.SetRunParamsTTL(time.Duration(ttl) * time.Second)
+		s.scanner.SetScanTimeoutSeconds(settings.ScanTimeoutSeconds)
 	}
 
 	currencyChanged := false
@@ -455,13 +490,22 @@ func (s *Server) validateAuthAndLoadConfigAndScan() {
 }
 
 func (s *Server) loadConfigAndScan() {
-	scanVersion := s.currentScanVersion()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	// Cancel-only parent: it carries the progress notifications, which must
+	// still be deliverable after the scan work below has run out of time.
+	ctx, cancel, scanVersion := s.beginWorkspaceScan()
+	defer s.endWorkspaceScan(scanVersion, cancel)
 
 	progress := newProgressReporter(s.client)
 	progress.Begin(ctx, "Scanning workspace")
-	defer progress.End(ctx, "Scan complete")
+	// LIFO: the spinner ends, then the client refreshes. Skipped when this scan
+	// has been superseded: its replacement is still running, and scanComplete
+	// latches the webview's completed state.
+	defer func() {
+		if !s.scanSuperseded(ctx, scanVersion) {
+			s.sendScanComplete()
+		}
+	}()
+	defer endProgress(ctx, progress, "Scan complete")
 
 	_ = s.scanner.FetchRunParams(ctx, s.workspaceRoot) // Pre-fetch run params to populate cache
 
@@ -469,7 +513,7 @@ func (s *Server) loadConfigAndScan() {
 	cfg, err := scanner.LoadConfig(s.workspaceRoot, s.scanner.GetConfigTemplate())
 	if err != nil {
 		slog.Error("loadConfigAndScan: failed to load config", "error", err)
-		progress.End(ctx, "Failed to load config")
+		endProgress(ctx, progress, "Failed to load config")
 		return
 	}
 	if !s.isCurrentScanVersion(scanVersion) {
@@ -479,29 +523,62 @@ func (s *Server) loadConfigAndScan() {
 	s.setConfig(cfg)
 	slog.Info("loadConfigAndScan: config loaded", "projects", len(cfg.Projects))
 
+	scanCtx, scanCancel := context.WithTimeout(ctx, s.workspaceScanBudget(len(cfg.Projects)))
+	defer scanCancel()
+
+	// Sampled once: the first project to run populates the shared cache
+	// directory, so a per-project check would only ever flag project one.
+	cacheCold := scanner.ModuleCacheIsCold()
+
 	totalResources := 0
 	totalViolations := 0
 	totalTagViolations := 0
+	var failed []ProjectScanError
 
 	for i, project := range cfg.Projects {
 		if !s.isCurrentScanVersion(scanVersion) {
 			slog.Info("loadConfigAndScan: stale scan before project, discarding")
 			return
 		}
+		if ctxErr := scanCtx.Err(); ctxErr != nil {
+			// Only a deadline means the projects behind this one were abandoned.
+			// A cancellation means a replacement scan is already running and
+			// reports for itself; calling these projects timed out would be a
+			// lie, and would write fake failures into projectErrors.
+			if !errors.Is(ctxErr, context.DeadlineExceeded) {
+				slog.Info("loadConfigAndScan: scan cancelled, discarding",
+					"scanned", i, "total", len(cfg.Projects))
+				return
+			}
+			slog.Error("loadConfigAndScan: workspace scan budget exhausted, abandoning remaining projects",
+				"scanned", i, "total", len(cfg.Projects))
+			failed = append(failed, s.recordAbandonedProjects(cfg.Projects[i:])...)
+			break
+		}
 		pct := (i * 100) / len(cfg.Projects)
-		progress.Report(ctx, fmt.Sprintf("Scanning %s...", project.Name), pct)
+		progress.Report(ctx, scanTitle(project.Name, cacheCold), pct)
 
 		s.setScanningProject(project.Name, true)
 		result, elapsed, err := func() (*scanner.ScanResult, time.Duration, error) {
 			defer s.setScanningProject(project.Name, false)
 			start := time.Now()
-			r, e := s.scanner.ScanProject(ctx, s.workspaceRoot, cfg, project)
+			r, e := s.scanProjectWithBudget(scanCtx, s.workspaceRoot, cfg, project)
 			return r, time.Since(start), e
 		}()
 		if err != nil {
+			// Checked before recording: a scan killed mid-project — a currency
+			// change kills the plugins under it — fails with a transport error,
+			// and storing that would leave a bogus failure in the status the
+			// webview reads.
+			if !s.isCurrentScanVersion(scanVersion) {
+				slog.Info("loadConfigAndScan: stale project scan failed, discarding", "name", project.Name, "error", err)
+				return
+			}
 			slog.Error("loadConfigAndScan: project scan failed", "name", project.Name, "error", err, "elapsed", elapsed)
+			failed = append(failed, s.setProjectError(project.Name, err))
 			continue
 		}
+		s.clearProjectError(project.Name)
 		if !s.isCurrentScanVersion(scanVersion) {
 			slog.Info("loadConfigAndScan: stale project scan, discarding", "name", project.Name)
 			return
@@ -515,7 +592,7 @@ func (s *Server) loadConfigAndScan() {
 			"elapsed", elapsed,
 		)
 
-		s.trackRun(ctx, result, elapsed)
+		s.trackRun(scanCtx, result, elapsed)
 
 		totalResources += len(result.Resources)
 		totalViolations += len(result.Violations)
@@ -533,7 +610,15 @@ func (s *Server) loadConfigAndScan() {
 		}
 	}
 
-	progress.End(ctx, fmt.Sprintf("Scan complete — %d resources, %d violations, %d tag issues", totalResources, totalViolations, totalTagViolations))
+	// A silent "0 resources" is ambiguous — it can mean "nothing to cost" or
+	// "we failed to scan". Surface failures so the user can tell them apart.
+	if len(failed) > 0 {
+		nctx, ncancel := notifyContext(ctx)
+		defer ncancel()
+		s.showMessage(nctx, lsp.MessageTypeWarning, scanFailureSummary(failed, len(cfg.Projects)))
+	}
+
+	endProgress(ctx, progress, fmt.Sprintf("Scan complete — %d resources, %d violations, %d tag issues", totalResources, totalViolations, totalTagViolations))
 }
 
 // refreshInlayHints asks the client to re-request inlay hints.
@@ -662,6 +747,130 @@ func (s *Server) clearResults() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.projectResults = make(map[string]*scanner.ScanResult)
+	s.projectErrors = make(map[string]ProjectScanError)
+}
+
+// setProjectError records why a project's last scan failed and returns the
+// stored entry so callers can build a summary from it.
+func (s *Server) setProjectError(name string, err error) ProjectScanError {
+	pe := ProjectScanError{
+		Project:  name,
+		Message:  err.Error(),
+		TimedOut: isDeadlineExceeded(err),
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectErrors[name] = pe
+	return pe
+}
+
+func (s *Server) clearProjectError(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.projectErrors, name)
+}
+
+// getProjectErrors returns the recorded failures, ordered by project name.
+func (s *Server) getProjectErrors() []ProjectScanError {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]ProjectScanError, 0, len(s.projectErrors))
+	for _, pe := range s.projectErrors {
+		out = append(out, pe)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Project < out[j].Project })
+	return out
+}
+
+// notifyContext derives a short-lived context for client notifications that must
+// still be delivered after the scan context has expired or been cancelled.
+func notifyContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
+
+// beginWorkspaceScan cancels any workspace scan already in flight and returns a
+// cancel-only context for the new one, together with the scan version it owns.
+// Cancel-only because the context carries the progress notifications, which
+// must still be deliverable after the scan work has run out of time.
+//
+// The version is bumped here, and returned rather than read by the caller:
+// cancelling the predecessor is not enough on its own, because every stale-scan
+// exit is gated on isCurrentScanVersion. Without the bump the superseded scan
+// passes each of those checks and carries on reporting over the top of its
+// replacement.
+func (s *Server) beginWorkspaceScan() (context.Context, context.CancelFunc, int64) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s.mu.Lock()
+	previous := s.workspaceScanCancel
+	s.scanVersion++
+	version := s.scanVersion
+	s.workspaceScanCancel = cancel
+	s.workspaceScanVersion = version
+	s.mu.Unlock()
+
+	if previous != nil {
+		previous()
+	}
+	return ctx, cancel, version
+}
+
+// tryBeginWorkspaceScan is beginWorkspaceScan for the analyzeFullScan fallback,
+// which must not supersede a scan already in flight. The fallback loads config
+// without the org's config template, so letting it cancel loadConfigAndScan
+// would leave the workspace scanned by the weaker path — and opening several
+// files before config loads spawns one fallback per file. ok is false when a
+// workspace scan is already running.
+func (s *Server) tryBeginWorkspaceScan() (context.Context, context.CancelFunc, int64, bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s.mu.Lock()
+	if s.workspaceScanCancel != nil {
+		s.mu.Unlock()
+		cancel()
+		return nil, nil, 0, false
+	}
+	s.scanVersion++
+	version := s.scanVersion
+	s.workspaceScanCancel = cancel
+	s.workspaceScanVersion = version
+	s.mu.Unlock()
+
+	return ctx, cancel, version, true
+}
+
+// endWorkspaceScan releases the scan's context. The entry is only cleared if
+// this scan still owns it, so a scan finishing late cannot advertise its
+// successor as finished.
+func (s *Server) endWorkspaceScan(version int64, cancel context.CancelFunc) {
+	cancel()
+
+	s.mu.Lock()
+	if s.workspaceScanVersion == version {
+		s.workspaceScanCancel = nil
+	}
+	s.mu.Unlock()
+}
+
+// cancelWorkspaceScan stops the in-flight workspace scan, if any.
+func (s *Server) cancelWorkspaceScan() {
+	s.mu.Lock()
+	cancel := s.workspaceScanCancel
+	s.workspaceScanCancel = nil
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// scanSuperseded reports whether this scan has been replaced: cancelled by a
+// newer scan, or overtaken by a scan-version bump. Killing the plugins under a
+// running scan surfaces as a transport error rather than context.Canceled, so
+// the version check has to be part of the test.
+func (s *Server) scanSuperseded(ctx context.Context, scanVersion int64) bool {
+	return errors.Is(ctx.Err(), context.Canceled) || !s.isCurrentScanVersion(scanVersion)
 }
 
 func (s *Server) bumpScanVersion() int64 {
@@ -685,7 +894,6 @@ func (s *Server) isCurrentScanVersion(version int64) bool {
 
 func (s *Server) cancelScheduledScans() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for name, t := range s.scanTimers {
 		t.Stop()
 		delete(s.scanTimers, name)
@@ -695,6 +903,14 @@ func (s *Server) cancelScheduledScans() {
 		delete(s.scanCancels, name)
 	}
 	s.dirtyProjects = make(map[string]string)
+	workspaceScan := s.workspaceScanCancel
+	s.workspaceScanCancel = nil
+	s.mu.Unlock()
+
+	// A superseded workspace scan holds plugins the replacement needs.
+	if workspaceScan != nil {
+		workspaceScan()
+	}
 }
 
 func (s *Server) setScanningProject(name string, scanning bool) {
@@ -754,10 +970,17 @@ func (s *Server) resetState() {
 	}
 	s.config = nil
 	s.projectResults = make(map[string]*scanner.ScanResult)
+	s.projectErrors = make(map[string]ProjectScanError)
 	s.scanningProjects = make(map[string]struct{})
 	s.dirtyProjects = make(map[string]string)
 	s.filesWithDiagnostics = make(map[string]struct{})
+	workspaceScan := s.workspaceScanCancel
+	s.workspaceScanCancel = nil
 	s.mu.Unlock()
+
+	if workspaceScan != nil {
+		workspaceScan()
+	}
 }
 
 func (s *Server) getConfig() *repoconfig.Config {
@@ -770,6 +993,20 @@ func (s *Server) setConfig(cfg *repoconfig.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config = cfg
+
+	// Drop failures for projects the new config no longer lists, or a project
+	// deleted from infracost.yml stays reported as failing forever.
+	live := make(map[string]struct{})
+	if cfg != nil {
+		for _, p := range cfg.Projects {
+			live[p.Name] = struct{}{}
+		}
+	}
+	for name := range s.projectErrors {
+		if _, ok := live[name]; !ok {
+			delete(s.projectErrors, name)
+		}
+	}
 }
 
 // findProjectForFile returns the project whose path is a prefix of filePath.

@@ -21,18 +21,28 @@ type GuardrailStatus struct {
 	Threshold        string `json:"threshold,omitempty"`
 }
 
+// ProjectScanError reports a project whose last scan failed, so the webview can
+// distinguish a failure from a project with nothing to cost.
+type ProjectScanError struct {
+	Project  string `json:"project"`
+	Message  string `json:"message"`
+	TimedOut bool   `json:"timedOut"`
+}
+
 type StatusResult struct {
-	Version             string            `json:"version"`
-	WorkspaceRoot       string            `json:"workspaceRoot"`
-	LoggedIn            bool              `json:"loggedIn"`
-	Scanning            bool              `json:"scanning"`
-	ProjectCount        int               `json:"projectCount"`
-	ProjectNames        []string          `json:"projectNames"`
-	ResourceCount       int               `json:"resourceCount"`
-	ViolationCount      int               `json:"violationCount"`
-	TagIssueCount       int               `json:"tagIssueCount"`
-	ConfigFound         bool              `json:"configFound"`
-	TriggeredGuardrails []GuardrailStatus `json:"triggeredGuardrails"`
+	Version             string             `json:"version"`
+	WorkspaceRoot       string             `json:"workspaceRoot"`
+	LoggedIn            bool               `json:"loggedIn"`
+	Scanning            bool               `json:"scanning"`
+	ProjectCount        int                `json:"projectCount"`
+	ProjectNames        []string           `json:"projectNames"`
+	ResourceCount       int                `json:"resourceCount"`
+	ViolationCount      int                `json:"violationCount"`
+	TagIssueCount       int                `json:"tagIssueCount"`
+	ConfigFound         bool               `json:"configFound"`
+	TriggeredGuardrails []GuardrailStatus  `json:"triggeredGuardrails"`
+	FailedProjectCount  int                `json:"failedProjectCount"`
+	FailedProjects      []ProjectScanError `json:"failedProjects"`
 }
 
 // HandleStatus handles the infracost/status custom request.
@@ -43,6 +53,9 @@ func (s *Server) HandleStatus(_ context.Context, _ json.RawMessage) (any, error)
 		LoggedIn:      s.scanner != nil && s.scanner.HasTokenSource(),
 		Scanning:      s.isScanning(),
 	}
+
+	result.FailedProjects = s.getProjectErrors()
+	result.FailedProjectCount = len(result.FailedProjects)
 
 	cfg := s.getConfig()
 	if cfg != nil {
