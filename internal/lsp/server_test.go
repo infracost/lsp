@@ -106,9 +106,8 @@ func TestScanTimeoutSetting(t *testing.T) {
 		assert.Equal(t, 4*time.Minute, scn.ScanTimeoutOrDefault())
 	})
 
-	// VS Code sends its first didChangeConfiguration moments after initialize,
-	// carrying nothing while the setting is undeclared in package.json. That
-	// must not wipe the value initialize just applied (FIX-619).
+	// The first didChangeConfiguration carries nothing while the setting is
+	// undeclared, and must not wipe what initialize applied (FIX-619).
 	t.Run("an empty didChangeConfiguration does not wipe initializationOptions", func(t *testing.T) {
 		scn := &scanner.Scanner{}
 		scn.Init()

@@ -35,8 +35,8 @@ type Settings struct {
 	EnableDiagnostics          *bool  `json:"enableDiagnostics"`
 	DisplayRemoteModulesInTree bool   `json:"displayRemoteModulesInTree"`
 	Currency                   string `json:"currency"`
-	// ScanTimeoutSeconds overrides the per-project scan budget. Zero or absent
-	// falls back to INFRACOST_LSP_SCAN_TIMEOUT, then the scanner default.
+	// ScanTimeoutSeconds overrides the per-project scan budget; zero falls back
+	// to INFRACOST_LSP_SCAN_TIMEOUT, then the scanner default.
 	ScanTimeoutSeconds int `json:"scanTimeoutSeconds"`
 }
 
@@ -47,20 +47,17 @@ type initializationOptions struct {
 	Currency         string         `json:"currency"`
 	CheckForUpdates  *bool          `json:"checkForUpdates"`
 	Proxy            proxy.Settings `json:"proxy"`
-	// ScanTimeoutSeconds mirrors the workspace setting. It has to arrive here
-	// too: didChangeConfiguration can land after the first scan has started,
-	// and the first scan is the one that pays for a cold module cache. It sets
-	// the baseline, so a later didChangeConfiguration carrying no value cannot
-	// wipe it.
+	// ScanTimeoutSeconds sets the baseline, so an empty didChangeConfiguration
+	// cannot wipe it before the cold first scan — which lands before that
+	// notification arrives.
 	ScanTimeoutSeconds int `json:"scanTimeoutSeconds"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
 
-// workspaceScanSlack is the headroom added *per project* to the workspace
-// ceiling, covering the work that sits outside a project's own scan budget:
-// diagnostics, code lens refreshes, event pushes. Per project rather than per
-// scan, so accumulated overhead can never eat into a later project's budget.
+// workspaceScanSlack is per-project headroom for the work outside a project's
+// own budget (diagnostics, refreshes, event pushes). Per project rather than
+// per scan, so accumulated overhead cannot eat a later project's budget.
 const workspaceScanSlack = time.Minute
 
 // isWindows controls whether uriToPath applies Windows-specific path
@@ -86,12 +83,9 @@ type Server struct {
 	// distinguishable from a project that genuinely has no resources.
 	projectErrors map[string]ProjectScanError
 
-	// workspaceScanCancel stops the in-flight whole-workspace scan. The
-	// per-project budgets bound each individual scan, but without this nothing
-	// stops a superseded workspace scan from running on against a stale root or
-	// plugins that have already been killed under it. Nil means no scan is
-	// running; workspaceScanVersion identifies which scan owns the entry, so a
-	// scan finishing late cannot clear its successor's.
+	// workspaceScanCancel stops the in-flight workspace scan, so a superseded
+	// one cannot run on against a stale root or dead plugins. Nil means none is
+	// running; workspaceScanVersion says which scan owns the entry.
 	workspaceScanCancel  context.CancelFunc
 	workspaceScanVersion int64
 
@@ -490,16 +484,13 @@ func (s *Server) validateAuthAndLoadConfigAndScan() {
 }
 
 func (s *Server) loadConfigAndScan() {
-	// Cancel-only parent: it carries the progress notifications, which must
-	// still be deliverable after the scan work below has run out of time.
+	// Cancel-only parent: it carries notifications that must outlive the budget.
 	ctx, cancel, scanVersion := s.beginWorkspaceScan()
 	defer s.endWorkspaceScan(scanVersion, cancel)
 
 	progress := newProgressReporter(s.client)
 	progress.Begin(ctx, "Scanning workspace")
-	// LIFO: the spinner ends, then the client refreshes. Skipped when this scan
-	// has been superseded: its replacement is still running, and scanComplete
-	// latches the webview's completed state.
+	// LIFO: the spinner ends, then the client refreshes.
 	defer func() {
 		if !s.scanSuperseded(ctx, scanVersion) {
 			s.sendScanComplete()
@@ -526,8 +517,7 @@ func (s *Server) loadConfigAndScan() {
 	scanCtx, scanCancel := context.WithTimeout(ctx, s.workspaceScanBudget(len(cfg.Projects)))
 	defer scanCancel()
 
-	// Sampled once: the first project to run populates the shared cache
-	// directory, so a per-project check would only ever flag project one.
+	// Sampled once; project one warms the cache for the rest.
 	cacheCold := scanner.ModuleCacheIsCold()
 
 	totalResources := 0
@@ -541,10 +531,8 @@ func (s *Server) loadConfigAndScan() {
 			return
 		}
 		if ctxErr := scanCtx.Err(); ctxErr != nil {
-			// Only a deadline means the projects behind this one were abandoned.
-			// A cancellation means a replacement scan is already running and
-			// reports for itself; calling these projects timed out would be a
-			// lie, and would write fake failures into projectErrors.
+			// Only a deadline means the rest were abandoned. Cancellation means
+			// a replacement is running and reports for itself.
 			if !errors.Is(ctxErr, context.DeadlineExceeded) {
 				slog.Info("loadConfigAndScan: scan cancelled, discarding",
 					"scanned", i, "total", len(cfg.Projects))
@@ -566,10 +554,9 @@ func (s *Server) loadConfigAndScan() {
 			return r, time.Since(start), e
 		}()
 		if err != nil {
-			// Checked before recording: a scan killed mid-project — a currency
-			// change kills the plugins under it — fails with a transport error,
-			// and storing that would leave a bogus failure in the status the
-			// webview reads.
+			// Before recording: a scan killed mid-project (a currency change
+			// kills its plugins) fails with a transport error, and storing that
+			// leaves a bogus failure in the status.
 			if !s.isCurrentScanVersion(scanVersion) {
 				slog.Info("loadConfigAndScan: stale project scan failed, discarding", "name", project.Name, "error", err)
 				return
@@ -750,8 +737,8 @@ func (s *Server) clearResults() {
 	s.projectErrors = make(map[string]ProjectScanError)
 }
 
-// setProjectError records why a project's last scan failed and returns the
-// stored entry so callers can build a summary from it.
+// setProjectError records why a project's last scan failed, returning the entry
+// so callers can build a summary from it.
 func (s *Server) setProjectError(name string, err error) ProjectScanError {
 	pe := ProjectScanError{
 		Project:  name,
@@ -783,22 +770,16 @@ func (s *Server) getProjectErrors() []ProjectScanError {
 	return out
 }
 
-// notifyContext derives a short-lived context for client notifications that must
-// still be delivered after the scan context has expired or been cancelled.
+// notifyContext derives a short-lived context for notifications that must
+// outlive an expired or cancelled scan context.
 func notifyContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 
-// beginWorkspaceScan cancels any workspace scan already in flight and returns a
-// cancel-only context for the new one, together with the scan version it owns.
-// Cancel-only because the context carries the progress notifications, which
-// must still be deliverable after the scan work has run out of time.
-//
-// The version is bumped here, and returned rather than read by the caller:
-// cancelling the predecessor is not enough on its own, because every stale-scan
-// exit is gated on isCurrentScanVersion. Without the bump the superseded scan
-// passes each of those checks and carries on reporting over the top of its
-// replacement.
+// beginWorkspaceScan cancels any workspace scan in flight and returns a
+// cancel-only context for the new one plus the scan version it owns. The bump
+// is what makes cancellation stick: every stale-scan exit is gated on
+// isCurrentScanVersion, so without it the superseded scan keeps reporting.
 func (s *Server) beginWorkspaceScan() (context.Context, context.CancelFunc, int64) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -817,11 +798,9 @@ func (s *Server) beginWorkspaceScan() (context.Context, context.CancelFunc, int6
 }
 
 // tryBeginWorkspaceScan is beginWorkspaceScan for the analyzeFullScan fallback,
-// which must not supersede a scan already in flight. The fallback loads config
-// without the org's config template, so letting it cancel loadConfigAndScan
-// would leave the workspace scanned by the weaker path — and opening several
-// files before config loads spawns one fallback per file. ok is false when a
-// workspace scan is already running.
+// which stands aside (ok=false) rather than superseding. It loads config with no
+// config template, so letting it win leaves the workspace scanned by the weaker
+// path — and one fallback spawns per file opened before config loads.
 func (s *Server) tryBeginWorkspaceScan() (context.Context, context.CancelFunc, int64, bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -840,9 +819,8 @@ func (s *Server) tryBeginWorkspaceScan() (context.Context, context.CancelFunc, i
 	return ctx, cancel, version, true
 }
 
-// endWorkspaceScan releases the scan's context. The entry is only cleared if
-// this scan still owns it, so a scan finishing late cannot advertise its
-// successor as finished.
+// endWorkspaceScan releases the scan's context, clearing the entry only if this
+// scan still owns it — a late finisher must not clear its successor's.
 func (s *Server) endWorkspaceScan(version int64, cancel context.CancelFunc) {
 	cancel()
 
@@ -853,7 +831,6 @@ func (s *Server) endWorkspaceScan(version int64, cancel context.CancelFunc) {
 	s.mu.Unlock()
 }
 
-// cancelWorkspaceScan stops the in-flight workspace scan, if any.
 func (s *Server) cancelWorkspaceScan() {
 	s.mu.Lock()
 	cancel := s.workspaceScanCancel
@@ -865,10 +842,9 @@ func (s *Server) cancelWorkspaceScan() {
 	}
 }
 
-// scanSuperseded reports whether this scan has been replaced: cancelled by a
-// newer scan, or overtaken by a scan-version bump. Killing the plugins under a
-// running scan surfaces as a transport error rather than context.Canceled, so
-// the version check has to be part of the test.
+// scanSuperseded reports whether this scan was replaced. Both halves are
+// needed: killing the plugins under a scan surfaces as a transport error, not
+// context.Canceled.
 func (s *Server) scanSuperseded(ctx context.Context, scanVersion int64) bool {
 	return errors.Is(ctx.Err(), context.Canceled) || !s.isCurrentScanVersion(scanVersion)
 }
@@ -994,8 +970,8 @@ func (s *Server) setConfig(cfg *repoconfig.Config) {
 	defer s.mu.Unlock()
 	s.config = cfg
 
-	// Drop failures for projects the new config no longer lists, or a project
-	// deleted from infracost.yml stays reported as failing forever.
+	// Drop failures for projects the new config no longer lists, or a deleted
+	// project is reported as failing forever.
 	live := make(map[string]struct{})
 	if cfg != nil {
 		for _, p := range cfg.Projects {

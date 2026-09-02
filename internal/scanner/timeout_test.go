@@ -66,9 +66,9 @@ func TestScanTimeoutOrDefault(t *testing.T) {
 	}
 }
 
-// The workspace setting wins over the baseline, and clearing it restores the
-// baseline rather than dropping to the default. Clients send zero for a setting
-// the user never set, so the clearing case is the common one.
+// The setting wins over the baseline, and clearing it restores the baseline
+// rather than the default. Clients send zero for an unset setting, so clearing
+// is the common case.
 func TestSetScanTimeoutPrecedence(t *testing.T) {
 	s := &Scanner{ScanTimeout: 4 * time.Minute}
 
@@ -88,10 +88,9 @@ func TestSetScanTimeoutPrecedence(t *testing.T) {
 	assert.Equal(t, DefaultScanTimeout, bare.ScanTimeoutOrDefault())
 }
 
-// initializationOptions is startup configuration, so it must set the baseline.
-// If it set the override, the first didChangeConfiguration — which VS Code
-// sends moments later, carrying nothing while the setting is undeclared — would
-// wipe it before the cold first scan ran (FIX-619).
+// initializationOptions must set the baseline, not the override: the first
+// didChangeConfiguration carries nothing while the setting is undeclared, and
+// would wipe it before the cold first scan (FIX-619).
 func TestBaselineScanTimeoutSurvivesClearedSetting(t *testing.T) {
 	s := &Scanner{}
 	s.Init()
@@ -107,8 +106,8 @@ func TestBaselineScanTimeoutSurvivesClearedSetting(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, s.ScanTimeoutOrDefault())
 }
 
-// A budget under the parser's own per-download budget reintroduces the bug, and
-// an unbounded one parks a project until the editor restarts.
+// Under the parser's per-download budget reintroduces the bug; unbounded parks
+// the project until restart.
 func TestScanTimeoutIsClamped(t *testing.T) {
 	tests := []struct {
 		name string
@@ -136,8 +135,7 @@ func TestInitAppliesDefaultScanTimeout(t *testing.T) {
 	s.Init()
 	assert.Equal(t, DefaultScanTimeout, s.ScanTimeout)
 
-	// The default must clear the parser's own 3 minute per-download budget,
-	// otherwise a cold module cache can never finish (FIX-619).
+	// Must clear the parser's 3 min per-download budget (FIX-619).
 	assert.Greater(t, s.ScanTimeout, 3*time.Minute)
 
 	// The floor applies to the environment baseline as well.
@@ -150,8 +148,8 @@ func TestInitAppliesDefaultScanTimeout(t *testing.T) {
 	assert.Equal(t, 20*time.Minute, explicit.ScanTimeout)
 }
 
-// parse must not impose a deadline of its own: the caller's per-project budget
-// is the only one, so a slow cold-cache parse is not cut short at 60s.
+// parse must impose no deadline of its own, or a slow cold-cache parse is cut
+// short at 60s.
 func TestParseUsesCallerDeadline(t *testing.T) {
 	project := &repoconfig.Project{Name: "proj", Path: "."}
 

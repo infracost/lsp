@@ -21,10 +21,8 @@ import (
 
 const scanDebounce = 300 * time.Millisecond
 
-// interactiveScanTimeout bounds a save-triggered scan when the module cache is
-// warm. Shorter than the cold-cache budget on purpose: the project's scanning
-// flag suppresses rescans for the whole window, so a long budget means a long
-// stretch of saves with no feedback.
+// interactiveScanTimeout bounds a save-triggered scan on a warm cache. Short
+// because the project's scanning flag suppresses rescans for the whole window.
 const interactiveScanTimeout = 2 * time.Minute
 
 // scheduleAnalyze debounces scan requests per project. Rapid saves within
@@ -113,29 +111,21 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 	s.refreshCodeLenses()
 	s.refreshInlayHints()
 
-	// A save-triggered scan holds the project's scanning flag for its whole
-	// budget, and scheduleAnalyze swallows every save in that window into
-	// dirtyProjects. So it only takes the full cold-cache budget when the cache
-	// is actually cold; with a warm cache there are no module downloads to wait
-	// for, and interactiveScanTimeout keeps the feedback loop short.
+	// Only a cold cache has downloads worth the full budget.
 	cacheCold := scanner.ModuleCacheIsCold()
 	budget := interactiveScanTimeout
 	if cacheCold {
 		budget = s.scanner.ScanTimeoutOrDefault()
 	}
 
-	// The budget lives on a child so the parent still distinguishes "superseded
-	// by a newer scan" from "ran out of time".
+	// Child, so the parent still distinguishes "superseded" from "out of time".
 	scanCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	progress := newProgressReporter(s.client)
 	progress.Begin(ctx, scanTitle(project.Name, cacheCold))
-	// Every exit path has to tell the client the scan is over, or the webview
-	// stays in its scanning state for the rest of the session (FIX-619). The one
-	// exception is a superseded scan: its replacement is still running, and
-	// scanComplete latches the webview's completed state, which would render
-	// this scan's stale results as final.
+	// Every exit path must report completion or the webview stays "scanning"
+	// (FIX-619). Superseded scans stay quiet: their replacement reports instead.
 	defer func() {
 		if !s.scanSuperseded(ctx, scanVersion) {
 			s.sendScanComplete()
@@ -147,8 +137,7 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 	elapsed := time.Since(start)
 
 	if err != nil {
-		// A superseded scan is not a failure: whatever replaced it reports for
-		// itself.
+		// Superseded is not failure; the replacement reports for itself.
 		if s.scanSuperseded(ctx, scanVersion) {
 			slog.Info("analyze: scan cancelled or superseded", "project", project.Name, "elapsed", elapsed)
 			endProgress(ctx, progress, "Scan cancelled")
@@ -164,8 +153,7 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 		s.setProjectError(project.Name, err)
 		message := scanFailureMessage(project.Name, err)
 		s.showMessage(nctx, lsp.MessageTypeWarning, message)
-		// The same wording as the toast: the spinner must not be the one place
-		// the raw "rpc error: code = DeadlineExceeded" still leaks out.
+		// Same wording as the toast, so the raw rpc error leaks nowhere.
 		endProgress(ctx, progress, message)
 		s.refreshCodeLenses()
 		s.refreshInlayHints()
@@ -213,26 +201,22 @@ func (s *Server) analyze(ctx context.Context, uri string) {
 	s.refreshInlayHints()
 	s.publishDiagnostics()
 
-	// Not scanCtx: a scan that finishes just inside its deadline would otherwise
-	// have its own "end" notification dropped, leaving the spinner up forever.
+	// Not scanCtx: finishing just inside the deadline would drop this and
+	// strand the spinner.
 	endProgress(ctx, progress, fmt.Sprintf("%d resources, %d violations", len(result.Resources), len(result.Violations)))
 }
 
-// endProgress closes the progress token on a context derived for notifications,
-// so a scan that ran out of time — or was cancelled — can still retract its own
-// spinner. The single way to end progress; the scan context must never carry a
-// terminal notification.
+// endProgress is the only way to end progress. It uses a notification context so
+// a scan that timed out or was cancelled can still retract its spinner.
 func endProgress(ctx context.Context, progress *progressReporter, message string) {
 	nctx, cancel := notifyContext(ctx)
 	defer cancel()
 	progress.End(nctx, message)
 }
 
-// workspaceScanBudget is the aggregate ceiling for a whole-workspace scan. Each
-// project is allowed its own full budget plus slack for the work outside it, so
-// overhead accumulated by earlier projects cannot truncate a later project's
-// deadline. Saturating, so a large configured budget cannot overflow into a
-// context that is already expired.
+// workspaceScanBudget is the whole-workspace ceiling: every project gets its
+// full budget plus slack, so earlier overhead cannot truncate a later project.
+// Saturates rather than overflowing into an already-expired context.
 func (s *Server) workspaceScanBudget(projects int) time.Duration {
 	if projects < 1 {
 		projects = 1
@@ -244,15 +228,13 @@ func (s *Server) workspaceScanBudget(projects int) time.Duration {
 	return time.Duration(projects) * per
 }
 
-// errWorkspaceBudgetExhausted marks projects the scan loop never reached. It
-// wraps context.DeadlineExceeded so isDeadlineExceeded classifies it as a
-// timeout, which is what it is.
+// errWorkspaceBudgetExhausted marks projects the loop never reached. Wraps
+// DeadlineExceeded so isDeadlineExceeded classifies it as the timeout it is.
 var errWorkspaceBudgetExhausted = fmt.Errorf(
 	"workspace scan budget exhausted before this project was scanned: %w", context.DeadlineExceeded)
 
-// recordAbandonedProjects marks the projects a scan gave up on, so a workspace
-// that ran out of budget does not render them as "0 resources" — the exact
-// ambiguity FIX-619 exists to remove.
+// recordAbandonedProjects marks projects a scan gave up on, so they do not
+// render as "0 resources" (FIX-619).
 func (s *Server) recordAbandonedProjects(projects []*repoconfig.Project) []ProjectScanError {
 	out := make([]ProjectScanError, 0, len(projects))
 	for _, project := range projects {
@@ -269,10 +251,8 @@ func (s *Server) scanProjectWithBudget(ctx context.Context, dir string, cfg *rep
 	return s.scanner.ScanProject(scanCtx, dir, cfg, project)
 }
 
-// scanTitle names the in-progress work, warning on a cold module cache that the
-// scan pays for downloads. cacheCold is passed in rather than sampled here: the
-// first project to run populates the shared cache directory, so sampling per
-// project would flag only project one while the rest still download.
+// scanTitle warns that a cold cache pays for downloads. cacheCold is passed in,
+// not sampled: project one warms the shared directory for the rest.
 func scanTitle(projectName string, cacheCold bool) string {
 	if cacheCold {
 		return fmt.Sprintf("Scanning %s (warming module cache)...", projectName)
@@ -324,8 +304,7 @@ func (s *Server) analyzeFullScan(uri string) {
 		}
 	}
 
-	// Cancel-only parent: it carries the progress notifications, which must
-	// still be deliverable after the scan work below has run out of time.
+	// Cancel-only parent: it carries notifications that must outlive the budget.
 	ctx, cancel, scanVersion, ok := s.tryBeginWorkspaceScan()
 	if !ok {
 		slog.Info("analyzeFullScan: a workspace scan is already running, skipping fallback", "uri", uri)
@@ -335,9 +314,7 @@ func (s *Server) analyzeFullScan(uri string) {
 
 	progress := newProgressReporter(s.client)
 	progress.Begin(ctx, "Scanning workspace")
-	// LIFO: the spinner ends, then the client refreshes. Skipped when this scan
-	// has been superseded: its replacement is still running, and scanComplete
-	// latches the webview's completed state.
+	// LIFO: the spinner ends, then the client refreshes.
 	defer func() {
 		if !s.scanSuperseded(ctx, scanVersion) {
 			s.sendScanComplete()
@@ -360,8 +337,7 @@ func (s *Server) analyzeFullScan(uri string) {
 	scanCtx, scanCancel := context.WithTimeout(ctx, s.workspaceScanBudget(len(cfg.Projects)))
 	defer scanCancel()
 
-	// Sampled once: the first project to run populates the shared cache
-	// directory, so a per-project check would only ever flag project one.
+	// Sampled once; project one warms the cache for the rest.
 	cacheCold := scanner.ModuleCacheIsCold()
 
 	totalResources := 0
@@ -374,10 +350,8 @@ func (s *Server) analyzeFullScan(uri string) {
 			return
 		}
 		if ctxErr := scanCtx.Err(); ctxErr != nil {
-			// Only a deadline means the projects behind this one were abandoned.
-			// A cancellation means a replacement scan is already running and
-			// reports for itself; calling these projects timed out would be a
-			// lie, and would write fake failures into projectErrors.
+			// Only a deadline means the rest were abandoned. Cancellation means
+			// a replacement is running and reports for itself.
 			if !errors.Is(ctxErr, context.DeadlineExceeded) {
 				slog.Info("analyzeFullScan: scan cancelled, discarding",
 					"scanned", i, "total", len(cfg.Projects))
@@ -400,9 +374,8 @@ func (s *Server) analyzeFullScan(uri string) {
 		s.setScanningProject(project.Name, false)
 
 		if err != nil {
-			// Checked before recording: a scan killed mid-project fails with a
-			// transport error, and storing that would leave a bogus failure in
-			// the status the webview reads.
+			// Before recording: a scan killed mid-project fails with a transport
+			// error, and storing that leaves a bogus failure in the status.
 			if !s.isCurrentScanVersion(scanVersion) {
 				slog.Info("analyzeFullScan: stale project scan failed, discarding", "name", project.Name, "error", err)
 				return

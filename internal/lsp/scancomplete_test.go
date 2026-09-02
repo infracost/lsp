@@ -29,15 +29,14 @@ import (
 )
 
 // notifRecorder records the notification methods a Server sends on the wire.
-// servertest drops notifications it does not recognise, and
-// infracost/scanComplete is the only thing that clears the webview's scanning
-// state — the symptom in FIX-619 — so it has to be observed directly.
+// servertest drops notifications it does not recognise, so scanComplete — the
+// one thing that clears the webview's scanning state — must be read directly.
 type notifRecorder struct {
 	mu      sync.Mutex
 	cond    *sync.Cond
 	methods []string
-	// ready closes once the server has answered a request, which proves it has
-	// run far enough to have injected the client into the handler.
+	// ready closes once the server answers a request, proving it has injected
+	// the client into the handler.
 	ready     chan struct{}
 	readyOnce sync.Once
 }
@@ -74,9 +73,8 @@ func (r *notifRecorder) wait(ctx context.Context, method string) error {
 	}
 }
 
-// recordNotifications runs srv as a real LSP server over an in-memory pipe. It
-// answers every server-to-client request with null, so a progress token can be
-// created without a live editor.
+// recordNotifications runs srv as a real LSP server over an in-memory pipe,
+// answering every request with null so progress tokens work without an editor.
 func recordNotifications(t *testing.T, srv *Server) *notifRecorder {
 	t.Helper()
 
@@ -125,8 +123,7 @@ func recordNotifications(t *testing.T, srv *Server) *notifRecorder {
 		_ = clientConn.Close()
 	})
 
-	// Handshake, so the caller cannot start a scan before the server has
-	// injected the client — sendScanComplete is a no-op without one. No
+	// Handshake: sendScanComplete is a no-op until the client is injected. No
 	// workspace root and no update check, so initialize starts nothing.
 	init := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":` +
 		`{"processId":1,"capabilities":{},"initializationOptions":{"checkForUpdates":false}}}`
@@ -178,10 +175,9 @@ func (failingParser) Parse(context.Context, *pluginpb.ParseRequest, ...grpc.Call
 	return nil, status.Error(codes.DeadlineExceeded, "context deadline exceeded")
 }
 
-// A failed scan must still send infracost/scanComplete. It is the only thing
-// that clears hasCompletedScan in the extension, so without it the webview
-// shows "scanning the workspace" until the editor restarts — the headline
-// symptom of FIX-619.
+// A failed scan must still send infracost/scanComplete: it is the only thing
+// that clears hasCompletedScan, so without it the webview shows "scanning the
+// workspace" until restart — the headline symptom of FIX-619.
 func TestFailedScanStillSendsScanComplete(t *testing.T) {
 	sc := &scanner.Scanner{
 		TokenSource: api.NewTokenSource(nil),

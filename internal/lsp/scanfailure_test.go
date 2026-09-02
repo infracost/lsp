@@ -103,8 +103,8 @@ func TestScanFailureSummary(t *testing.T) {
 	}
 }
 
-// A failed scan has to be distinguishable from a project with nothing to cost,
-// so the failure is carried in state rather than only logged (FIX-619).
+// A failed scan must be distinguishable from a project with nothing to cost, so
+// failures live in state, not just the log (FIX-619).
 func TestProjectScanErrorsReachStatus(t *testing.T) {
 	srv := NewServer(nil, nil, api.NewTokenSource(nil))
 
@@ -136,8 +136,7 @@ func TestProjectScanErrorsReachStatus(t *testing.T) {
 	assert.Equal(t, 0, res.(StatusResult).FailedProjectCount)
 }
 
-// A project removed from the config must stop being reported as failing, or a
-// stale failure outlives the project for the rest of the session (FIX-619).
+// A project removed from the config must stop being reported as failing.
 func TestSetConfigPrunesErrorsForRemovedProjects(t *testing.T) {
 	srv := NewServer(nil, nil, api.NewTokenSource(nil))
 	srv.setProjectError("a", errors.New("boom"))
@@ -158,8 +157,8 @@ func TestSetConfigPrunesErrorsForRemovedProjects(t *testing.T) {
 	assert.Equal(t, "a", errs[0].Project)
 }
 
-// notifyContext must outlive the scan context, or the "scan failed" message and
-// the terminal progress notification are dropped and the UI hangs (FIX-619).
+// notifyContext must outlive the scan context, or the failure message and
+// terminal progress notification are dropped and the UI hangs (FIX-619).
 func TestNotifyContextSurvivesDeadScanContext(t *testing.T) {
 	scanCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -173,8 +172,7 @@ func TestNotifyContextSurvivesDeadScanContext(t *testing.T) {
 	assert.True(t, ok, "notification context should still be bounded")
 }
 
-// The workspace ceiling must bound the scan without ever being tighter than the
-// budgets it hands out, or the later projects are starved (FIX-619).
+// The workspace ceiling must never be tighter than the budgets it hands out.
 func TestWorkspaceScanBudget(t *testing.T) {
 	srv := NewServer(&scanner.Scanner{ScanTimeout: 10 * time.Minute}, nil, api.NewTokenSource(nil))
 
@@ -200,8 +198,7 @@ func TestWorkspaceScanBudget(t *testing.T) {
 	}
 }
 
-// A large configured budget must not overflow into a context that is already
-// expired, which would abandon every project with only a log line.
+// A large budget must not overflow into an already-expired context.
 func TestWorkspaceScanBudgetSaturates(t *testing.T) {
 	srv := NewServer(&scanner.Scanner{ScanTimeout: scanner.MaxScanTimeout}, nil, api.NewTokenSource(nil))
 
@@ -224,9 +221,8 @@ func (b *budgetSpyParser) Parse(ctx context.Context, _ *pluginpb.ParseRequest, _
 	return &pluginpb.ParseResponse{}, nil
 }
 
-// Every project must get its full budget under the workspace ceiling the scan
-// loops actually pass, so an earlier project exhausting its own budget cannot
-// truncate the projects behind it (FIX-619).
+// Every project gets its full budget under the ceiling the loops actually pass,
+// so an earlier project cannot truncate the ones behind it (FIX-619).
 func TestScanProjectWithBudgetGivesEachProjectItsOwnDeadline(t *testing.T) {
 	spy := &budgetSpyParser{}
 	sc := &scanner.Scanner{
@@ -248,9 +244,8 @@ func TestScanProjectWithBudgetGivesEachProjectItsOwnDeadline(t *testing.T) {
 		{Name: "c", Path: "."},
 	}}
 
-	// The workspace-budget context, exactly as the scan loops build it — a
-	// WithTimeout parent, so a per-project deadline can be truncated by it if
-	// the ceiling is sized wrong.
+	// A WithTimeout parent as the loops build it, so a mis-sized ceiling shows up
+	// as a truncated per-project deadline.
 	parent, cancel := context.WithTimeout(context.Background(), srv.workspaceScanBudget(len(cfg.Projects)))
 	defer cancel()
 
@@ -267,8 +262,8 @@ func TestScanProjectWithBudgetGivesEachProjectItsOwnDeadline(t *testing.T) {
 	}
 }
 
-// Projects the loop never reached must be recorded as failures, or a workspace
-// that ran out of budget renders them as "0 resources" (FIX-619).
+// Projects the loop never reached must be recorded, or they render as
+// "0 resources" (FIX-619).
 func TestRecordAbandonedProjects(t *testing.T) {
 	srv := NewServer(nil, nil, api.NewTokenSource(nil))
 
@@ -296,16 +291,15 @@ func TestRecordAbandonedProjects(t *testing.T) {
 	assert.Contains(t, summary, "timed out")
 }
 
-// The cold-cache hint has to be sampled once per workspace scan: project one
-// populates the shared cache directory, so a per-project check would flag only
-// project one while the rest are still downloading (FIX-619).
+// The cold-cache hint is sampled once per scan: project one warms the shared
+// cache, so a per-project check would flag only project one (FIX-619).
 func TestScanTitle(t *testing.T) {
 	assert.Equal(t, "Scanning prod (warming module cache)...", scanTitle("prod", true))
 	assert.Equal(t, "Scanning prod...", scanTitle("prod", false))
 }
 
-// gateParser blocks each parse until its context is cancelled, so a test can
-// stop a workspace scan at a known point in the loop.
+// gateParser blocks each parse until its context dies, so a test can stop a
+// workspace scan at a known point in the loop.
 type gateParser struct {
 	pluginpb.ParserServiceClient
 
@@ -319,8 +313,7 @@ func (g *gateParser) Parse(ctx context.Context, req *pluginpb.ParseRequest, _ ..
 }
 
 // A cancelled workspace scan must not claim the projects it never reached timed
-// out. Only an exhausted budget means that; a cancellation means a replacement
-// scan is running and reports for itself (FIX-619).
+// out — only an exhausted budget means that (FIX-619).
 func TestCancelledWorkspaceScanReportsNothing(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"a", "b", "c"} {
@@ -355,8 +348,7 @@ func TestCancelledWorkspaceScanReportsNothing(t *testing.T) {
 		srv.analyzeFullScan(pathToURI(filepath.Join(root, "a", "main.tf")))
 	}()
 
-	// Cancel once the loop is inside the first project, so it reaches the
-	// budget check for the second with a cancelled context.
+	// Cancel inside project one, so project two hits a cancelled context.
 	select {
 	case <-gate.started:
 	case <-time.After(30 * time.Second):
@@ -381,8 +373,8 @@ func TestCancelledWorkspaceScanReportsNothing(t *testing.T) {
 	}
 }
 
-// The fallback loads config without the org's config template, so it must stand
-// aside rather than cancel a real workspace scan (FIX-619).
+// The fallback loads config with no template, so it must stand aside rather
+// than cancel a real workspace scan (FIX-619).
 func TestFallbackScanDoesNotSupersedeWorkspaceScan(t *testing.T) {
 	srv := NewServer(nil, nil, api.NewTokenSource(nil))
 
@@ -401,9 +393,8 @@ func TestFallbackScanDoesNotSupersedeWorkspaceScan(t *testing.T) {
 	srv.endWorkspaceScan(version2, cancel2)
 }
 
-// beginWorkspaceScan has to bump the version as well as cancel, or the
-// superseded scan passes every isCurrentScanVersion check and reports over the
-// top of its replacement (FIX-619).
+// beginWorkspaceScan must bump the version as well as cancel, or the superseded
+// scan passes every version check and reports anyway (FIX-619).
 func TestBeginWorkspaceScanSupersedesPredecessor(t *testing.T) {
 	srv := NewServer(nil, nil, api.NewTokenSource(nil))
 
