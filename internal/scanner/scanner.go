@@ -53,6 +53,8 @@ func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.Tr
 	var errs []string
 	for _, p := range plugins {
 		name := p.Info.GetName()
+		// 60s stays: pricing a parsed tree downloads no modules, so it is not
+		// exposed to the cold-cache problem (FIX-619).
 		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		processStart := time.Now()
 		resp, err := p.Process(ctx, &pluginpb.ProcessRequest{Input: input})
@@ -92,6 +94,11 @@ type Scanner struct {
 	OnOrgID           func(string)
 	OnLog             func(level, message string, fields map[string]any)
 
+	// ScanTimeout is the baseline per-project budget, parse included, from
+	// INFRACOST_LSP_SCAN_TIMEOUT. It must clear the parser's own download budget
+	// (3 min per download) or a cold cache can never finish.
+	ScanTimeout time.Duration
+
 	tagPolicies        []*event.TagPolicy
 	finopsPolicies     []*event.FinopsPolicySettings
 	guardrails         []*event.Guardrail
@@ -109,6 +116,10 @@ type Scanner struct {
 
 	policyDetailMu    sync.RWMutex
 	policyDetailCache map[string]dashboard.PolicyDetail
+
+	scanTimeoutMu sync.RWMutex
+	// settingScanTimeout is the client-provided override. Zero means unset.
+	settingScanTimeout time.Duration
 }
 
 // resetPlugins kills the plugin subprocesses so the next scan spawns fresh
@@ -122,9 +133,105 @@ func (s *Scanner) resetPlugins() {
 	}
 }
 
+const (
+	// DefaultScanTimeout bounds one project scan when nothing configures it.
+	DefaultScanTimeout = 10 * time.Minute
+	// MinScanTimeout is the floor: below the parser's 3 min per-download budget
+	// a cold cache can never finish, which is the bug itself (FIX-619).
+	MinScanTimeout = 3 * time.Minute
+	// MaxScanTimeout is the ceiling: a wedged plugin holds the project's
+	// rescan-suppressing "scanning" flag for the whole budget.
+	MaxScanTimeout = time.Hour
+)
+
 // Init initializes internal state. Must be called before first use.
 func (s *Scanner) Init() {
 	s.policyDetailCache = make(map[string]dashboard.PolicyDetail)
+
+	s.scanTimeoutMu.Lock()
+	s.ScanTimeout = clampScanTimeout(s.ScanTimeout)
+	if s.ScanTimeout <= 0 {
+		s.ScanTimeout = DefaultScanTimeout
+	}
+	s.scanTimeoutMu.Unlock()
+}
+
+// clampScanTimeout bounds a budget to [MinScanTimeout, MaxScanTimeout].
+// Non-positive means unset and passes through as zero.
+func clampScanTimeout(d time.Duration) time.Duration {
+	switch {
+	case d <= 0:
+		return 0
+	case d < MinScanTimeout:
+		slog.Warn("scanner: scan timeout below minimum, raising", "requested", d, "min", MinScanTimeout)
+		return MinScanTimeout
+	case d > MaxScanTimeout:
+		slog.Warn("scanner: scan timeout above maximum, lowering", "requested", d, "max", MaxScanTimeout)
+		return MaxScanTimeout
+	default:
+		return d
+	}
+}
+
+// scanTimeoutFromSeconds converts client-supplied seconds into a budget. The
+// seconds are bounded before the multiply, which would otherwise overflow
+// time.Duration and wrap negative — reading back as "unset".
+func scanTimeoutFromSeconds(secs int) time.Duration {
+	if secs <= 0 {
+		return 0
+	}
+	if maxSecs := int(MaxScanTimeout / time.Second); secs > maxSecs {
+		slog.Warn("scanner: scan timeout above maximum, lowering",
+			"requested_seconds", secs, "max", MaxScanTimeout)
+		secs = maxSecs
+	}
+	return clampScanTimeout(time.Duration(secs) * time.Second)
+}
+
+// ScanTimeoutOrDefault is the per-project budget for deriving a scan context.
+// Workspace setting wins, then the baseline, then DefaultScanTimeout.
+func (s *Scanner) ScanTimeoutOrDefault() time.Duration {
+	if s == nil {
+		return DefaultScanTimeout
+	}
+
+	s.scanTimeoutMu.RLock()
+	setting, baseline := s.settingScanTimeout, s.ScanTimeout
+	s.scanTimeoutMu.RUnlock()
+
+	switch {
+	case setting > 0:
+		return setting
+	case baseline > 0:
+		return baseline
+	default:
+		return DefaultScanTimeout
+	}
+}
+
+// SetScanTimeoutSeconds applies the workspace setting, which wins over the
+// baseline. Non-positive clears the override — clients send zero for an unset
+// setting — so the baseline applies again. Clamped.
+func (s *Scanner) SetScanTimeoutSeconds(secs int) {
+	d := scanTimeoutFromSeconds(secs)
+	s.scanTimeoutMu.Lock()
+	s.settingScanTimeout = d
+	s.scanTimeoutMu.Unlock()
+	slog.Info("scanner: scan timeout override set", "override", d, "effective", s.ScanTimeoutOrDefault())
+}
+
+// SetBaselineScanTimeoutSeconds replaces the baseline from client
+// initializationOptions — startup configuration, the same tier as the env var,
+// so clearing the workspace setting falls back to this. Non-positive is a no-op.
+func (s *Scanner) SetBaselineScanTimeoutSeconds(secs int) {
+	d := scanTimeoutFromSeconds(secs)
+	if d <= 0 {
+		return
+	}
+	s.scanTimeoutMu.Lock()
+	s.ScanTimeout = d
+	s.scanTimeoutMu.Unlock()
+	slog.Info("scanner: scan timeout baseline set", "baseline", d, "effective", s.ScanTimeoutOrDefault())
 }
 
 func (s *Scanner) GetConfigTemplate() string {
@@ -182,6 +289,9 @@ func (s *Scanner) SetCurrency(currency string) bool {
 }
 
 // SetRunParamsTTL sets how long fetchRunParams results are cached.
+// runParamsTimeout bounds a single run-params fetch.
+const runParamsTimeout = 30 * time.Second
+
 func (s *Scanner) SetRunParamsTTL(d time.Duration) {
 	s.runParamsMu.Lock()
 	s.runParamsTTL = d
@@ -208,6 +318,12 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 
 	repoURL := vcs.GetRemoteURL(rootDir)
 	branch := vcs.GetCurrentBranch(rootDir)
+
+	// Bounded here, not at the call sites: ScanProject fetches on the per-project
+	// context and the shared HTTP client has no timeout, so a blackholed
+	// dashboard would burn the whole scan budget before parse (FIX-619).
+	ctx, cancel := context.WithTimeout(ctx, runParamsTimeout)
+	defer cancel()
 
 	client := dashboard.NewClient(s.HTTPClient, s.DashboardEndpoint)
 	params, err := client.RunParameters(ctx, "", repoURL, branch)
@@ -836,10 +952,9 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 	slog.Debug("attachPolicyDetails: attached", "uncached", len(uncached), "total_cached", totalCached)
 }
 
+// parse imposes no deadline of its own: the caller's per-project budget is the
+// only one, so a cold module cache is not cut short.
 func (s *Scanner) parse(ctx context.Context, path string, project *repoconfig.Project, rootDir string, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) (*pluginpb.ParseResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
 	pp, err := s.Plugins.ParserPluginForProject(ctx, string(projectType))
 	if err != nil {
 		// EnsurePlugins caches its result behind a sync.Once, so a transient
@@ -948,6 +1063,23 @@ func protoAttributeRequirements(reqs []*parserapi.AttributeRequirement) []*optio
 		out = append(out, &options.AttributeRequirement{ResourceType: r.ResourceType, Attributes: r.Attributes})
 	}
 	return out
+}
+
+// ModuleCacheIsCold reports whether the shared parser cache is empty or absent.
+func ModuleCacheIsCold() bool {
+	return moduleCacheIsCold(parserCacheDir())
+}
+
+func moduleCacheIsCold(dir string) bool {
+	f, err := os.Open(dir) //nolint:gosec // G304: dir is the LSP's own cache path, not user input
+	if err != nil {
+		return true
+	}
+	defer func() { _ = f.Close() }()
+
+	// One entry is enough; listing a large cache is wasted work here.
+	names, err := f.Readdirnames(1)
+	return err != nil || len(names) == 0
 }
 
 // parserCacheDir mirrors the CLI's cache.ParserDir resolution

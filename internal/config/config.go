@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/infracost/cli/pkg/auth"
 	"github.com/infracost/cli/pkg/environment"
@@ -17,6 +18,8 @@ type Config struct {
 	Currency        string
 	PricingEndpoint string
 	DebugUI         string
+	// ScanTimeout bounds a single project scan. Zero means use the scanner default.
+	ScanTimeout time.Duration
 
 	TokenSource       oauth2.TokenSource
 	DashboardEndpoint string
@@ -42,6 +45,7 @@ func Load(ctx context.Context) Config {
 		cfg.PricingEndpoint = v
 	}
 	cfg.DebugUI = os.Getenv("INFRACOST_DEBUG_UI")
+	cfg.ScanTimeout = scanTimeoutFromEnv()
 
 	cfg.DashboardEndpoint = "https://dashboard.api.infracost.io"
 	if v := os.Getenv("INFRACOST_CLI_DASHBOARD_ENDPOINT"); v != "" {
@@ -52,6 +56,24 @@ func Load(ctx context.Context) Config {
 	cfg.Plugins = loadPluginsConfig()
 
 	return cfg
+}
+
+// scanTimeoutFromEnv reads the per-project scan budget override, e.g. "15m".
+func scanTimeoutFromEnv() time.Duration {
+	v := os.Getenv("INFRACOST_LSP_SCAN_TIMEOUT")
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		slog.Warn("ignoring unparseable INFRACOST_LSP_SCAN_TIMEOUT", "value", v, "error", err)
+		return 0
+	}
+	if d <= 0 {
+		slog.Warn("ignoring non-positive INFRACOST_LSP_SCAN_TIMEOUT", "value", v)
+		return 0
+	}
+	return d
 }
 
 // TokenCachePath returns the path to the LSP's own token cache file,
