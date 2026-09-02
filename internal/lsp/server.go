@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -36,12 +37,19 @@ type Settings struct {
 }
 
 type initializationOptions struct {
-	ExtensionVersion string         `json:"extensionVersion"`
-	ClientName       string         `json:"clientName"`
-	SupportsCodeLens *bool          `json:"supportsCodeLens"`
-	Currency         string         `json:"currency"`
-	CheckForUpdates  *bool          `json:"checkForUpdates"`
-	Proxy            proxy.Settings `json:"proxy"`
+	ExtensionVersion string `json:"extensionVersion"`
+	ClientName       string `json:"clientName"`
+	SupportsCodeLens *bool  `json:"supportsCodeLens"`
+	Currency         string `json:"currency"`
+	CheckForUpdates  *bool  `json:"checkForUpdates"`
+	// EnableBicep turns on the ARM plugin's Bicep support, which is off by
+	// default because pricing Bicep runs the Bicep compiler and restores its
+	// modules over the network. Nil means the client said nothing, and the
+	// ambient environment decides. Clients are expected to source this from a
+	// machine-scoped setting, never a workspace one: opening a repository must
+	// not be enough to make Infracost run a compiler over it.
+	EnableBicep *bool          `json:"enableBicep"`
+	Proxy       proxy.Settings `json:"proxy"`
 }
 
 const defaultRunParamsCacheTTLSeconds = 300
@@ -154,6 +162,7 @@ func (s *Server) Initialize(_ context.Context, params *lsp.InitializeParams) (*l
 
 	initOpts := parseInitializationOptions(params)
 	proxy.Apply(initOpts.Proxy)
+	applyBicepSetting(initOpts.EnableBicep)
 	s.registerClientMetadata(params, initOpts)
 
 	if s.scanner != nil {
@@ -229,6 +238,16 @@ func (s *Server) registerClientMetadata(params *lsp.InitializeParams, initOpts i
 	if initOpts.ExtensionVersion != "" {
 		events.RegisterMetadata("version", initOpts.ExtensionVersion)
 	}
+
+	// Stamped onto every event this session pushes, unconditionally in both states
+	// so "off" is a value rather than an absent field.
+	//
+	// Read from the environment via bicepEnabled() rather than from
+	// initOpts.EnableBicep, because the two can disagree: vscode always sends an
+	// explicit boolean, but a client that omits the field leaves the decision to an
+	// ambient INFRACOST_ENABLE_BICEP, which still prices Bicep. applyBicepSetting
+	// has already run by this point, so the environment holds the effective state.
+	events.RegisterMetadata("bicepEnabled", bicepEnabled())
 	if initOpts.Currency != "" {
 		currency := scanner.NormalizeCurrency(initOpts.Currency)
 		s.mu.Lock()
@@ -257,6 +276,55 @@ func parseInitializationOptions(params *lsp.InitializeParams) initializationOpti
 		}
 	}
 	return initOpts
+}
+
+// bicepEnabledEnv is the ARM plugin's Bicep gate. The plugin reads it from its
+// own environment, which it inherits from this process, so setting it here is
+// what reaches the plugin — there is no option to pass through the parse RPC.
+const bicepEnabledEnv = "INFRACOST_ENABLE_BICEP"
+
+// applyBicepSetting reconciles the client's enableBicep setting with the
+// environment the parser plugins will inherit.
+//
+// A nil setting means the client didn't mention Bicep, so whatever the user
+// exported in their own shell stands. An explicit setting wins in both
+// directions: in an editor the setting is the user's decision, made in
+// machine-scoped configuration, and a client that has been switched off should
+// not keep pricing Bicep because a variable is exported somewhere upstream of
+// the editor.
+//
+// This runs once, at initialize, before anything spawns a plugin. Plugin
+// subprocesses read the variable when they start, so a client that changes the
+// setting later has to restart the server for it to take effect — which is what
+// a machine-scoped setting implies anyway.
+func applyBicepSetting(enable *bool) {
+	if enable == nil {
+		return
+	}
+
+	if *enable {
+		if err := os.Setenv(bicepEnabledEnv, "true"); err != nil {
+			slog.Warn("failed to enable Bicep support", "error", err)
+		}
+		return
+	}
+
+	if err := os.Unsetenv(bicepEnabledEnv); err != nil {
+		slog.Warn("failed to disable Bicep support", "error", err)
+	}
+}
+
+// bicepEnabled reports whether the ARM plugin will claim Bicep files. It reads
+// the same variable with the same accepted values as the plugin does, because
+// the plugin inherits this process's environment and the two must agree about
+// what "on" means — otherwise the server would analyze files the plugin
+// silently ignores, or ignore files it would have priced.
+func bicepEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(bicepEnabledEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // ExecuteCommand implements server.ExecuteCommandHandler.
@@ -845,6 +913,13 @@ func isSupportedFile(uri string) bool {
 	}
 
 	lower := strings.ToLower(uri)
+	if strings.HasSuffix(lower, ".bicep") || strings.HasSuffix(lower, ".bicepparam") {
+		// Only worth analysing when the ARM plugin will actually claim the
+		// file; with the gate off a scan finds no project and the editor shows
+		// nothing, so opening one would just spin a scan for no result.
+		return bicepEnabled()
+	}
+
 	return strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".json")
 }
 
