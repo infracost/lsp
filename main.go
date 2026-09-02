@@ -62,6 +62,8 @@ func main() {
 		Level: cfg.SlogLevel,
 	})))
 
+	update.CleanupStale()
+
 	tokenSource := api.NewTokenSource(cfg.TokenSource)
 	httpClient, apiTransport := api.NewHTTPClient(tokenSource)
 	eventsClient := events.NewClient(httpClient, cfg.PricingEndpoint)

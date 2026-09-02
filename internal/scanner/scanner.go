@@ -799,6 +799,7 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		result.Errors = append(result.Errors, msg)
 	}
 	result.Resources = make([]ResourceResult, 0, len(allResources))
+	var noPrice, zeroPrice []string
 	for _, r := range allResources {
 		monthlyCost, components := resourceCost(r, exchangeRate)
 
@@ -834,7 +835,27 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 			"cost", FormatCost(rr.MonthlyCost),
 		)
 
+		for _, name := range rr.MissingPriceComponents() {
+			noPrice = append(noPrice, rr.Name+"."+name)
+		}
+		for _, name := range rr.ZeroPriceComponents() {
+			zeroPrice = append(zeroPrice, rr.Name+"."+name)
+		}
+
 		result.Resources = append(result.Resources, rr)
+	}
+
+	if len(noPrice) > 0 {
+		s.logWarn("scanProject: components with no price", map[string]any{
+			"count":      len(noPrice),
+			"components": sampleNames(noPrice),
+		})
+	}
+	if len(zeroPrice) > 0 {
+		s.logWarn("scanProject: components priced at zero", map[string]any{
+			"count":      len(zeroPrice),
+			"components": sampleNames(zeroPrice),
+		})
 	}
 
 	// Aggregate costs per top-level module.
@@ -2007,4 +2028,13 @@ func formatCurrencyAmount(amount float64, currency string, precision int) string
 		return fmt.Sprintf("%s%.*f", symbol, precision, amount)
 	}
 	return fmt.Sprintf("%s %.*f", currency, precision, amount)
+}
+
+const maxSampledNames = 10
+
+func sampleNames(names []string) string {
+	if len(names) <= maxSampledNames {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s (+%d more)", strings.Join(names[:maxSampledNames], ", "), len(names)-maxSampledNames)
 }

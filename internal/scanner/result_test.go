@@ -383,3 +383,186 @@ func mustRat(t *testing.T, s string) *rat.Rat {
 	}
 	return r
 }
+
+func TestConvertCostComponentPriceFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		c           *provider.CostComponent
+		wantMissing bool
+		wantZero    bool
+	}{
+		{
+			name:        "plugin flagged lookup as failed",
+			c:           &provider.CostComponent{Name: "Instance hours", PriceNotFound: true},
+			wantMissing: true,
+		},
+		{
+			name:        "no period price arrived",
+			c:           &provider.CostComponent{Name: "Instance hours"},
+			wantMissing: true,
+		},
+		{
+			name: "priced",
+			c: &provider.CostComponent{
+				Name:        "Instance hours",
+				PeriodPrice: &provider.PeriodPrice{Price: rat.New(1).Proto(), Period: provider.Period_HOUR},
+				Quantity:    rat.New(1).Proto(),
+			},
+		},
+		{
+			// io1 volumes seen in FIX-655: a quantity arrives but the price is zero.
+			name: "quantity with zero price",
+			c: &provider.CostComponent{
+				Name:        "Provisioned IOPS",
+				PeriodPrice: &provider.PeriodPrice{Price: rat.New(0).Proto(), Period: provider.Period_MONTH},
+				Quantity:    rat.New(1200).Proto(),
+			},
+			wantZero: true,
+		},
+		{
+			name: "zero quantity and zero price is not flagged",
+			c: &provider.CostComponent{
+				Name:        "Storage",
+				PeriodPrice: &provider.PeriodPrice{Price: rat.New(0).Proto(), Period: provider.Period_MONTH},
+				Quantity:    rat.New(0).Proto(),
+			},
+		},
+		{
+			name: "period price with unknown quantity is not flagged",
+			c: &provider.CostComponent{
+				Name:        "Data transfer",
+				PeriodPrice: &provider.PeriodPrice{Price: rat.New(1).Proto(), Period: provider.Period_MONTH},
+			},
+		},
+		{
+			// The RDS case from the logs: the plugin flags the failed lookup and
+			// also fills in a zero price. Must report as missing, not zero.
+			name: "failed lookup with a zero price is missing only",
+			c: &provider.CostComponent{
+				Name:          "Database instance (on-demand, Single-AZ, c5.xlarge)",
+				PriceNotFound: true,
+				PeriodPrice:   &provider.PeriodPrice{Price: rat.New(0).Proto(), Period: provider.Period_HOUR},
+				Quantity:      rat.New(730).Proto(),
+			},
+			wantMissing: true,
+		},
+		{
+			// A 100% discount zeroes the derived price but the lookup succeeded.
+			name: "fully discounted price is not flagged",
+			c: &provider.CostComponent{
+				Name:         "Instance hours",
+				PeriodPrice:  &provider.PeriodPrice{Price: rat.New(1).Proto(), Period: provider.Period_MONTH},
+				Quantity:     rat.New(730).Proto(),
+				DiscountRate: rat.New(1).Proto(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertCostComponent(tt.c, nil)
+			assert.Equal(t, tt.wantMissing, got.PriceMissing, "PriceMissing")
+			assert.Equal(t, tt.wantZero, got.PriceZero, "PriceZero")
+		})
+	}
+}
+
+func TestZeroPriceComponents(t *testing.T) {
+	r := ResourceResult{
+		IsSupported: true,
+		CostComponents: []CostComponent{
+			{Name: "Storage", PriceZero: true},
+			{Name: "Instance hours"},
+			{Name: "Provisioned IOPS", PriceZero: true},
+		},
+	}
+	assert.Equal(t, []string{"Storage", "Provisioned IOPS"}, r.ZeroPriceComponents())
+	assert.Nil(t, r.MissingPriceComponents())
+}
+
+func TestMissingPriceComponents(t *testing.T) {
+	tests := []struct {
+		name       string
+		components []CostComponent
+		want       []string
+	}{
+		{
+			name:       "no components",
+			components: nil,
+			want:       nil,
+		},
+		{
+			name: "all priced",
+			components: []CostComponent{
+				{Name: "Instance hours"},
+				{Name: "EBS storage"},
+			},
+			want: nil,
+		},
+		{
+			name: "one unpriced",
+			components: []CostComponent{
+				{Name: "Instance hours", PriceMissing: true},
+				{Name: "EBS storage"},
+			},
+			want: []string{"Instance hours"},
+		},
+		{
+			name: "several unpriced",
+			components: []CostComponent{
+				{Name: "Instance hours", PriceMissing: true},
+				{Name: "EBS storage", PriceMissing: true},
+			},
+			want: []string{"Instance hours", "EBS storage"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := ResourceResult{CostComponents: tt.components, IsSupported: true}
+			assert.Equal(t, tt.want, r.MissingPriceComponents())
+		})
+	}
+
+	unpriced := []CostComponent{{Name: "Instance hours", PriceMissing: true}}
+
+	t.Run("free resource is not flagged", func(t *testing.T) {
+		r := ResourceResult{CostComponents: unpriced, IsSupported: true, IsFree: true}
+		assert.Nil(t, r.MissingPriceComponents())
+	})
+
+	t.Run("unsupported resource is not flagged", func(t *testing.T) {
+		r := ResourceResult{CostComponents: unpriced}
+		assert.Nil(t, r.MissingPriceComponents())
+	})
+}
+
+func TestResourceCostPropagatesPriceMissingFromChildren(t *testing.T) {
+	r := &provider.Resource{
+		Name: "aws_instance.web",
+		Costs: &provider.ResourceCosts{
+			Components: []*provider.CostComponent{
+				{Name: "Instance hours", PriceNotFound: true},
+			},
+		},
+		ChildResources: []*provider.Resource{
+			{
+				Name: "aws_instance.web.root_block_device",
+				Costs: &provider.ResourceCosts{
+					Components: []*provider.CostComponent{
+						{Name: "Storage", PriceNotFound: true},
+					},
+				},
+			},
+		},
+	}
+
+	total, components := resourceCost(r, nil)
+
+	require.Len(t, components, 2)
+	assert.True(t, total.IsZero())
+	assert.Equal(t,
+		[]string{"Instance hours", "Storage"},
+		ResourceResult{CostComponents: components, IsSupported: true}.MissingPriceComponents(),
+	)
+}
