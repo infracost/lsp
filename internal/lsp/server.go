@@ -500,6 +500,13 @@ func (s *Server) loadConfigAndScan() {
 
 	_ = s.scanner.FetchRunParams(ctx, s.workspaceRoot) // Pre-fetch run params to populate cache
 
+	// Before LoadConfig: config generation identifies project types via the
+	// parser plugins, so an empty plugin dir detects nothing and the scan
+	// silently finds zero projects.
+	if err := s.scanner.EnsurePlugins(ctx); err != nil {
+		slog.Warn("loadConfigAndScan: failed to install plugins", "error", err)
+	}
+
 	slog.Info("loadConfigAndScan: loading config", "dir", s.workspaceRoot)
 	cfg, err := scanner.LoadConfig(s.workspaceRoot, s.scanner.GetConfigTemplate())
 	if err != nil {

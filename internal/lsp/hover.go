@@ -63,10 +63,7 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 
 		md := buildFullHoverMarkdown(r, violations, tagViolations, currency)
 		return &lsp.Hover{
-			Contents: lsp.MarkupContent{
-				Kind:  lsp.Markdown,
-				Value: md,
-			},
+			Contents: lsp.NewHoverContents(lsp.Markdown, md),
 			Range: &lsp.Range{
 				Start: lsp.Position{Line: safeLineToLSP(r.StartLine), Character: 0},
 				End:   lsp.Position{Line: safeLineToLSP(r.EndLine), Character: 0},
@@ -97,10 +94,7 @@ func (s *Server) Hover(_ context.Context, params *lsp.HoverParams) (*lsp.Hover, 
 
 		md := buildModuleHoverMarkdown(mc, modResources, currency)
 		return &lsp.Hover{
-			Contents: lsp.MarkupContent{
-				Kind:  lsp.Markdown,
-				Value: md,
-			},
+			Contents: lsp.NewHoverContents(lsp.Markdown, md),
 			Range: &lsp.Range{
 				Start: lsp.Position{Line: safeLineToLSP(mc.StartLine), Character: 0},
 				End:   lsp.Position{Line: safeLineToLSP(mc.EndLine), Character: 0},
