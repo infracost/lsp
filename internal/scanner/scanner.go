@@ -238,6 +238,18 @@ func (s *Scanner) GetConfigTemplate() string {
 	return s.configTemplate
 }
 
+// EnsurePlugins installs the parser/provider plugins if they are missing.
+// Config generation identifies project types via the parser plugins, so on a
+// fresh machine an empty plugin dir silently yields zero projects. Callers must
+// run this before generating config.
+func (s *Scanner) EnsurePlugins(ctx context.Context) error {
+	if s.Plugins == nil {
+		return nil
+	}
+	_, err := s.Plugins.EnsurePlugins(ctx)
+	return err
+}
+
 // accessToken returns a valid access token from the token source.
 func (s *Scanner) accessToken() (string, error) {
 	if s.TokenSource == nil {
@@ -292,6 +304,10 @@ func (s *Scanner) SetCurrency(currency string) bool {
 // runParamsTimeout bounds a single run-params fetch.
 const runParamsTimeout = 30 * time.Second
 
+// runParamsUnmarshal tolerates fields added by a newer dashboard so a version
+// skew drops nothing.
+var runParamsUnmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
+
 func (s *Scanner) SetRunParamsTTL(d time.Duration) {
 	s.runParamsMu.Lock()
 	s.runParamsTTL = d
@@ -335,7 +351,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	for i, raw := range params.TagPolicies {
 		slog.Debug("fetchRunParams: raw tag policy", "index", i, "json", string(raw))
 		var tp event.TagPolicy
-		if err := protojson.Unmarshal(raw, &tp); err != nil {
+		if err := runParamsUnmarshal.Unmarshal(raw, &tp); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal tag policy", "error", err)
 			continue
 		}
@@ -346,7 +362,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	for i, raw := range params.FinopsPolicies {
 		slog.Debug("fetchRunParams: raw finops policy", "index", i, "json", string(raw))
 		var fp event.FinopsPolicySettings
-		if err := protojson.Unmarshal(raw, &fp); err != nil {
+		if err := runParamsUnmarshal.Unmarshal(raw, &fp); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal finops policy", "error", err)
 			continue
 		}
@@ -357,7 +373,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	for i, raw := range params.Guardrails {
 		slog.Debug("fetchRunParams: raw guardrail", "index", i, "json", string(raw))
 		var g event.Guardrail
-		if err := protojson.Unmarshal(raw, &g); err != nil {
+		if err := runParamsUnmarshal.Unmarshal(raw, &g); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal guardrail", "error", err)
 			continue
 		}
@@ -368,7 +384,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	productionFilters := make([]*event.ProductionFilter, 0, len(params.ProductionFilters))
 	for _, raw := range params.ProductionFilters {
 		var pf event.ProductionFilter
-		if err := protojson.Unmarshal(raw, &pf); err != nil {
+		if err := runParamsUnmarshal.Unmarshal(raw, &pf); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal production filter", "error", err)
 			continue
 		}
@@ -381,7 +397,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	var usageDefaults *event.UsageDefaults
 	if len(params.UsageDefaults) > 0 {
 		var ud event.UsageDefaults
-		if err := protojson.Unmarshal(params.UsageDefaults, &ud); err != nil {
+		if err := runParamsUnmarshal.Unmarshal(params.UsageDefaults, &ud); err != nil {
 			slog.Warn("fetchRunParams: failed to unmarshal usage defaults", "error", err)
 		} else {
 			usageDefaults = &ud
