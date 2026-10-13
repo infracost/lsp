@@ -551,13 +551,23 @@ func (s *Scanner) Close() {
 	}
 }
 
-// LoadConfig loads or auto-generates an infracost config for the given directory.
-func LoadConfig(dir, configTemplate string) (*repoconfig.Config, error) {
+// LoadConfig loads or auto-generates an infracost config for the given directory, detecting
+// project types with the parser plugins in pluginDir (config's default plugin dir when empty).
+func LoadConfig(dir, configTemplate, pluginDir string) (*repoconfig.Config, error) {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
-	return loadOrGenerateConfig(absDir, configTemplate)
+	return loadOrGenerateConfig(absDir, configTemplate, pluginDir)
+}
+
+// PluginDir returns the directory the scanner installs plugins into, or "" when it has no
+// plugin config.
+func (s *Scanner) PluginDir() string {
+	if s == nil || s.Plugins == nil {
+		return ""
+	}
+	return s.Plugins.PluginDir()
 }
 
 // Scan analyzes the given directory and returns resource cost results.
@@ -567,7 +577,7 @@ func (s *Scanner) Scan(ctx context.Context, dir string) (*ScanResult, error) {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
-	cfg, err := loadOrGenerateConfig(absDir, s.configTemplate)
+	cfg, err := loadOrGenerateConfig(absDir, s.configTemplate, s.PluginDir())
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
@@ -1585,16 +1595,16 @@ func IsRemoteSource(filename string) bool {
 	return strings.Contains(filename, "://") || strings.HasPrefix(filename, "git::")
 }
 
-func loadOrGenerateConfig(dir, configTemplate string) (*repoconfig.Config, error) {
+func loadOrGenerateConfig(dir, configTemplate, pluginDir string) (*repoconfig.Config, error) {
 	configPath := filepath.Join(dir, "infracost.yml")
 	if _, err := os.Stat(configPath); err == nil {
 		slog.Debug("loadConfig: found infracost.yml", "path", configPath)
-		return repoconfig.LoadConfigFile(context.Background(), configPath, dir)
+		return repoconfig.LoadConfigFile(context.Background(), configPath, dir, repoconfig.WithLoadPluginDir(pluginDir))
 	}
 
 	slog.Debug("loadConfig: no infracost.yml, auto-generating config", "dir", dir)
 
-	var opts []repoconfig.GenerationOption
+	opts := []repoconfig.GenerationOption{repoconfig.WithPluginDir(pluginDir)}
 
 	if configTemplate != "" {
 		opts = append(opts, repoconfig.WithTemplate(configTemplate))

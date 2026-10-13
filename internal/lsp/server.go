@@ -508,7 +508,7 @@ func (s *Server) loadConfigAndScan() {
 	}
 
 	slog.Info("loadConfigAndScan: loading config", "dir", s.workspaceRoot)
-	cfg, err := scanner.LoadConfig(s.workspaceRoot, s.scanner.GetConfigTemplate())
+	cfg, err := scanner.LoadConfig(s.workspaceRoot, s.scanner.GetConfigTemplate(), s.scanner.PluginDir())
 	if err != nil {
 		slog.Error("loadConfigAndScan: failed to load config", "error", err)
 		endProgress(ctx, progress, "Failed to load config")
