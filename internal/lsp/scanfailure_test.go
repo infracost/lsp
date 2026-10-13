@@ -321,7 +321,7 @@ func TestCancelledWorkspaceScanReportsNothing(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(root, name, "main.tf"), []byte("# empty\n"), 0o600))
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(root, "infracost.yml"), []byte(
-		"version: 0.1\nprojects:\n  - path: a\n    name: a\n  - path: b\n    name: b\n  - path: c\n    name: c\n",
+		"version: 0.1\nprojects:\n  - path: a\n    name: a\n    type: terraform\n  - path: b\n    name: b\n    type: terraform\n  - path: c\n    name: c\n    type: terraform\n",
 	), 0o600))
 
 	gate := &gateParser{started: make(chan string, 4)}
