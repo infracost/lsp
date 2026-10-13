@@ -322,7 +322,7 @@ func (s *Server) analyzeFullScan(uri string) {
 	}()
 	defer endProgress(ctx, progress, "Scan complete")
 
-	cfg, err := scanner.LoadConfig(dir, "")
+	cfg, err := scanner.LoadConfig(dir, "", s.scanner.PluginDir())
 	if err != nil {
 		slog.Error("analyzeFullScan: failed to load config", "error", err)
 		endProgress(ctx, progress, "Failed to load config")
