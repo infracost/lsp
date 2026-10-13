@@ -561,8 +561,8 @@ func LoadConfig(dir, configTemplate, pluginDir string) (*repoconfig.Config, erro
 	return loadOrGenerateConfig(absDir, configTemplate, pluginDir)
 }
 
-// PluginDir returns the directory the scanner installs plugins into, or "" when it has no
-// plugin config.
+// PluginDir returns the directory the scanner loads plugins from, or "" when it has no plugin
+// config.
 func (s *Scanner) PluginDir() string {
 	if s == nil || s.Plugins == nil {
 		return ""

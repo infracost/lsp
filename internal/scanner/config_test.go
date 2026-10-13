@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Config detection must look for parser plugins where the scanner installs them, so a custom
+// Config detection must look for parser plugins where the scanner loads them from, so a custom
 // INFRACOST_CLI_PLUGIN_DIR is honoured rather than config's default plugin dir.
 func TestLoadConfigUsesScannerPluginDir(t *testing.T) {
 	pluginDir := t.TempDir()
@@ -20,6 +20,12 @@ func TestLoadConfigUsesScannerPluginDir(t *testing.T) {
 
 	t.Run("generate", func(t *testing.T) {
 		_, err := LoadConfig(t.TempDir(), "", s.PluginDir())
+		require.ErrorIs(t, err, repoconfig.ErrNoParserPlugins)
+		assert.Contains(t, err.Error(), pluginDir)
+	})
+
+	t.Run("scan", func(t *testing.T) {
+		_, err := s.Scan(t.Context(), t.TempDir())
 		require.ErrorIs(t, err, repoconfig.ErrNoParserPlugins)
 		assert.Contains(t, err.Error(), pluginDir)
 	})
