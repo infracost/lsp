@@ -111,8 +111,8 @@ github.com/hashicorp/yamux v0.1.2 h1:XtB8kyFOyHXYVFnwT5C3+Bdo8gArse7j2AQ0DA0Uey8
 github.com/hashicorp/yamux v0.1.2/go.mod h1:C+zze2n6e/7wshOZep2A70/aQU6QBRWJO/G6FT1wIns=
 github.com/infracost/cli v0.0.14-0.20260807035530-c304cbdee40f h1:CwZ3OdFgX6QlfHQccAz4gafbhB9zznev9u6ZKkhm62o=
 github.com/infracost/cli v0.0.14-0.20260807035530-c304cbdee40f/go.mod h1:QIBB0J6HuLW+HWgEQjXL6O1E7l2slmMKb7TS8CUIv60=
-github.com/infracost/config v0.19.0 h1:A1YfvtZl2BUA5nwHHTmpVCyEowd+ng8qvQHuIhiWkXU=
-github.com/infracost/config v0.19.0/go.mod h1:D6y4UR71bjUIA0/WVeF1tyLqawbHYrwHVCVR1hdY4Vw=
+github.com/infracost/config v0.20.0 h1:mhsHNqAL8H8gqwWydGu5GqK8gT1bcwTDr2S78KW2whk=
+github.com/infracost/config v0.20.0/go.mod h1:D6y4UR71bjUIA0/WVeF1tyLqawbHYrwHVCVR1hdY4Vw=
 github.com/infracost/go-proto v1.30.0 h1:p2I6HBVEnMAf5JLoNVWIhfR37tuCIklo9EN5fTa233A=
 github.com/infracost/go-proto v1.30.0/go.mod h1:xoATj9jfEa+V+iD9PZMflYdM7Z2cDvGhLnB074Vo9pg=
 github.com/infracost/proto v1.175.0 h1:2rLnc/H4kP6NM0MFKmBeah0MYdNme5shuUKNNoW2ui0=
