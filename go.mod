@@ -7,7 +7,7 @@ require (
 	github.com/hashicorp/go-plugin v1.8.0 // indirect
 	github.com/infracost/config v0.20.0
 	github.com/infracost/go-proto v1.52.0
-	github.com/infracost/proto v1.178.0
+	github.com/infracost/proto v1.182.0
 	github.com/owenrumney/go-lsp v0.2.5
 )
 
@@ -15,7 +15,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/google/go-github/v83 v83.0.0
 	github.com/google/uuid v1.6.0
-	github.com/infracost/cli v0.0.14-0.20261022071947-4534c809e0ef
+	github.com/infracost/cli v0.0.14-0.20261123101041-ec42dd62f295
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/oauth2 v0.37.0
 	google.golang.org/grpc v1.84.0
@@ -55,6 +55,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/hcl/v2 v2.25.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/infracost/analytics-go v0.3.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/liamg/tml v0.7.1 // indirect
