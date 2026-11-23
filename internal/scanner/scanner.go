@@ -983,9 +983,8 @@ func (s *Scanner) attachPolicyDetails(ctx context.Context, orgID string, violati
 func (s *Scanner) parse(ctx context.Context, path string, project *repoconfig.Project, rootDir string, projectType repoconfig.ProjectType, finopsPolicies []*event.FinopsPolicySettings) (*pluginpb.ParseResponse, error) {
 	pp, err := s.Plugins.ParserPluginForProject(ctx, string(projectType))
 	if err != nil {
-		// EnsurePlugins caches its result behind a sync.Once, so a transient
-		// download failure would otherwise stick for the life of the server.
-		// Reset so the next scan retries.
+		// The manager memoizes a failed plugin load; Close clears it so the next
+		// scan reconnects. A failed install is retried by EnsurePlugins itself.
 		s.resetPlugins()
 		return nil, fmt.Errorf("loading parser plugin for project type %q: %w", projectType, err)
 	}
