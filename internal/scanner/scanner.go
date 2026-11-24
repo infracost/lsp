@@ -18,10 +18,12 @@ import (
 	"time"
 
 	cliplugins "github.com/infracost/cli/pkg/plugins"
+	pkgscanner "github.com/infracost/cli/pkg/scanner"
 	repoconfig "github.com/infracost/config"
 	"github.com/infracost/go-proto/pkg/address"
 	"github.com/infracost/go-proto/pkg/diagnostic"
 	goprotoevent "github.com/infracost/go-proto/pkg/event"
+	goproject "github.com/infracost/go-proto/pkg/project"
 	providerconv "github.com/infracost/go-proto/pkg/providers"
 	"github.com/infracost/go-proto/pkg/rat"
 	treeresource "github.com/infracost/go-proto/pkg/tree/resource"
@@ -42,7 +44,7 @@ import (
 	"github.com/infracost/lsp/internal/vcs"
 )
 
-func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.TreeInput) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
+func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.TreeInput, aiEnabled bool) ([]*provider.Resource, []*provider.FinopsPolicyResult, []string) {
 	plugins, err := s.Plugins.ProviderPlugins(ctx)
 	if err != nil {
 		return nil, nil, []string{fmt.Sprintf("loading provider plugins: %v", err)}
@@ -53,6 +55,9 @@ func (s *Scanner) processLoadedProviders(ctx context.Context, input *provider.Tr
 	var errs []string
 	for _, p := range plugins {
 		name := p.Info.GetName()
+		if pkgscanner.IsAIProvider(name) && !aiEnabled {
+			continue
+		}
 		// 60s stays: pricing a parsed tree downloads no modules, so it is not
 		// exposed to the cold-cache problem (FIX-619).
 		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -88,6 +93,7 @@ type Scanner struct {
 	Plugins           *cliplugins.Config
 	Currency          string
 	PricingEndpoint   string
+	CostdevEndpoint   string
 	DashboardEndpoint string
 	TokenSource       *api.TokenSource
 	HTTPClient        *http.Client
@@ -104,6 +110,7 @@ type Scanner struct {
 	guardrails         []*event.Guardrail
 	productionFilters  []*event.ProductionFilter
 	usageDefaults      *event.UsageDefaults
+	aiEnabled          bool
 	repositoryName     string
 	configTemplate     string
 	currencyMu         sync.RWMutex
@@ -411,6 +418,7 @@ func (s *Scanner) FetchRunParams(ctx context.Context, rootDir string) string {
 	s.productionFilters = productionFilters
 	s.repositoryName = params.RepositoryName
 	s.usageDefaults = usageDefaults
+	s.aiEnabled = pkgscanner.AIEnabled(params.FeatureFlags)
 	s.runParamsOrgID = params.OrganizationID
 	s.runParamsFetchedAt = time.Now()
 	s.runParamsMu.Unlock()
@@ -430,6 +438,9 @@ type runParamsSnapshot struct {
 	finopsPolicies    []*event.FinopsPolicySettings
 	tagPolicies       []*event.TagPolicy
 	guardrails        []*event.Guardrail
+	// aiEnabled is the enableAiPlugin feature flag: without it, appcode
+	// projects aren't parsed and the ai provider doesn't run.
+	aiEnabled bool
 }
 
 func (s *Scanner) runParamsSnapshot() runParamsSnapshot {
@@ -442,6 +453,7 @@ func (s *Scanner) runParamsSnapshot() runParamsSnapshot {
 		finopsPolicies:    append([]*event.FinopsPolicySettings(nil), s.finopsPolicies...),
 		tagPolicies:       append([]*event.TagPolicy(nil), s.tagPolicies...),
 		guardrails:        append([]*event.Guardrail(nil), s.guardrails...),
+		aiEnabled:         s.aiEnabled,
 	}
 }
 
@@ -688,6 +700,9 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 	slog.Debug("scanProject: starting", "name", project.Name, "path", projectPath)
 
 	projectType := finalProjectType(project.Type, projectPath)
+	if projectType == repoconfig.ProjectType(goproject.AppCode) && !params.aiEnabled {
+		return &ScanResult{}, nil
+	}
 
 	parseStart := time.Now()
 	parseResp, err := s.parse(ctx, projectPath, project, rootDir, projectType, params.finopsPolicies)
@@ -793,6 +808,7 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		Infracost: &provider.Infracost{
 			ApiKey:             token,
 			PricingApiEndpoint: pricingEndpoint,
+			CostdevApiEndpoint: s.CostdevEndpoint,
 			OrgId:              &orgID,
 		},
 	}
@@ -812,7 +828,7 @@ func (s *Scanner) scanProject(ctx context.Context, rootDir string, cfg *repoconf
 		allResources = append(allResources, pr)
 	}
 
-	rs, ps, provErrs := s.processLoadedProviders(ctx, input)
+	rs, ps, provErrs := s.processLoadedProviders(ctx, input, params.aiEnabled)
 	allResources = append(allResources, rs...)
 	allFinops := ps
 	result.Errors = append(result.Errors, provErrs...)

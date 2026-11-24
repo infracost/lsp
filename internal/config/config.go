@@ -17,6 +17,8 @@ type Config struct {
 	SlogLevel       slog.Level
 	Currency        string
 	PricingEndpoint string
+	// CostdevEndpoint is cost.dev's API, which AI policies read their model catalog from.
+	CostdevEndpoint string
 	DebugUI         string
 	// ScanTimeout bounds a single project scan. Zero means use the scanner default.
 	ScanTimeout time.Duration
@@ -33,6 +35,7 @@ func Load(ctx context.Context) Config {
 		SlogLevel:       slog.LevelInfo,
 		Currency:        "USD",
 		PricingEndpoint: "https://pricing.api.infracost.io",
+		CostdevEndpoint: "https://api.cost.dev",
 	}
 
 	if os.Getenv("INFRACOST_LOG_LEVEL") == "debug" {
@@ -43,6 +46,9 @@ func Load(ctx context.Context) Config {
 	}
 	if v := os.Getenv("INFRACOST_CLI_PRICING_ENDPOINT"); v != "" {
 		cfg.PricingEndpoint = v
+	}
+	if v := os.Getenv("INFRACOST_CLI_COSTDEV_ENDPOINT"); v != "" {
+		cfg.CostdevEndpoint = v
 	}
 	cfg.DebugUI = os.Getenv("INFRACOST_DEBUG_UI")
 	cfg.ScanTimeout = scanTimeoutFromEnv()
