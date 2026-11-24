@@ -88,6 +88,7 @@ func main() {
 		Plugins:           cfg.Plugins,
 		Currency:          cfg.Currency,
 		PricingEndpoint:   cfg.PricingEndpoint,
+		CostdevEndpoint:   cfg.CostdevEndpoint,
 		DashboardEndpoint: cfg.DashboardEndpoint,
 		TokenSource:       tokenSource,
 		HTTPClient:        httpClient,
